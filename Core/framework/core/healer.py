@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from typing import Any
 
 from selenium.common.exceptions import InvalidSelectorException
@@ -53,6 +52,7 @@ class Healer:
 
         selector = ""
         success = False
+        repair_provider = getattr(self.llm_client, "provider_name", "unknown")
         try:
             selector = self.llm_client.repair_selector(payload)
             selector, selector_type = parse_selector_response(selector)
@@ -69,7 +69,7 @@ class Healer:
                 old_selector=element_definition.selector,
                 failure_type=type(failure).__name__,
                 top_candidates=[self._candidate_payload(item) for item in top_candidates],
-                llm_provider=getattr(self.llm_client, "provider_name", "unknown"),
+                llm_provider=repair_provider,
                 new_selector=selector,
                 success=success,
                 artifact_paths={

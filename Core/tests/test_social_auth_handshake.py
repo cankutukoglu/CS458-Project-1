@@ -8,6 +8,7 @@ from tests.helpers import (
     managed_runtime,
     open_login_page,
     require_reachable_base_url,
+    require_scenario_enabled,
     require_social_credentials,
 )
 
@@ -23,6 +24,7 @@ from tests.helpers import (
 )
 def test_social_auth_handshake(suite_config, provider, element_key):
     require_reachable_base_url(suite_config)
+    require_scenario_enabled(suite_config, "social_auth_handshake")
     username, password = require_social_credentials(suite_config, provider)
 
     with managed_runtime(suite_config, "chrome") as runtime:

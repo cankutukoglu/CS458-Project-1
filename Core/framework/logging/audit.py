@@ -12,7 +12,7 @@ class HealingAuditLogger:
     def __init__(self, root: str | Path = "artifacts") -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
-        self.healed_elements_path = self.root / "healed_elements.jsonl"
+        self.healed_elements_path = self.root / "healed_elements.json"
         self.selector_overrides_path = self.root / "selector_overrides.json"
 
     def write(self, attempt: HealAttempt) -> None:
@@ -26,8 +26,12 @@ class HealingAuditLogger:
             "success": attempt.success,
             "artifact_paths": attempt.artifact_paths,
         }
-        with self.healed_elements_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload) + "\n")
+        attempts = self.read_attempts()
+        attempts.append(payload)
+        self.healed_elements_path.write_text(
+            json.dumps(attempts, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
         if attempt.success and attempt.new_selector:
             overrides = self.read_overrides()
@@ -41,3 +45,8 @@ class HealingAuditLogger:
         if not self.selector_overrides_path.exists():
             return {}
         return json.loads(self.selector_overrides_path.read_text(encoding="utf-8"))
+
+    def read_attempts(self) -> list[dict]:
+        if not self.healed_elements_path.exists():
+            return []
+        return json.loads(self.healed_elements_path.read_text(encoding="utf-8"))

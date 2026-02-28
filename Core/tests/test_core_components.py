@@ -14,8 +14,8 @@ def test_config_loader_validates_json(tmp_path):
         json.dumps(
             {
                 "environment": {
-                    "base_url": "http://localhost:8000",
-                    "api_base_url": "http://localhost:8000",
+                    "base_url": "http://localhost:8080",
+                    "api_base_url": "http://localhost:8080",
                     "browser_matrix": ["chrome"],
                     "default_timeout_seconds": 5,
                     "headless": True

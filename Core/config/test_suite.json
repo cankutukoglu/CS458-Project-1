@@ -1,14 +1,14 @@
 {
   "environment": {
-    "base_url": "http://localhost:8000",
-    "api_base_url": "http://localhost:8000",
+    "base_url": "http://localhost:8080",
+    "api_base_url": "http://localhost:8080/api",
     "browser_matrix": ["chrome", "firefox"],
     "default_timeout_seconds": 10,
     "headless": false
   },
   "credentials": {
-    "email": "student@example.com",
-    "phone": "+15555550123",
+    "email": "ares.tester@example.com",
+    "phone": "+1 (555) 000-0000",
     "password": "ChangeMe123!",
     "google_username": "",
     "google_password": "",
@@ -32,7 +32,7 @@
         "attributes": {
           "name": "email",
           "type": "email",
-          "placeholder": "Email"
+          "placeholder": "you@example.com"
         },
         "location": {
           "x": 320,
@@ -53,6 +53,42 @@
       }
     },
     {
+      "key": "login_phone_input",
+      "intended_role": "input",
+      "selector_type": "css",
+      "selector": "#phone",
+      "fallback_selectors": [
+        "input[name='phone']",
+        "input[type='tel']"
+      ],
+      "historical_metadata": {
+        "tag": "input",
+        "parent_tag": "form",
+        "text": "",
+        "attributes": {
+          "name": "phone",
+          "type": "tel",
+          "placeholder": "+90 555 123 4567"
+        },
+        "location": {
+          "x": 320,
+          "y": 340
+        },
+        "size": {
+          "width": 320,
+          "height": 44
+        },
+        "color": "rgb(31, 41, 55)",
+        "background_color": "rgb(249, 250, 251)",
+        "neighbor_signature": [
+          "form",
+          "label",
+          "input"
+        ],
+        "last_verified_at": "2026-02-28T18:00:00+03:00"
+      }
+    },
+    {
       "key": "login_password_input",
       "intended_role": "input",
       "selector_type": "css",
@@ -68,11 +104,11 @@
         "attributes": {
           "name": "password",
           "type": "password",
-          "placeholder": "Password"
+          "placeholder": "Enter your password"
         },
         "location": {
           "x": 320,
-          "y": 340
+          "y": 400
         },
         "size": {
           "width": 320,
@@ -92,29 +128,29 @@
       "key": "login_button",
       "intended_role": "button",
       "selector_type": "css",
-      "selector": "#login-button",
+      "selector": "#loginButton",
       "fallback_selectors": [
-        "button[type='submit']",
-        "//button[contains(normalize-space(.), 'Login')]"
+        "button.btn-login",
+        "//button[contains(normalize-space(.), 'Sign In')]"
       ],
       "historical_metadata": {
         "tag": "button",
         "parent_tag": "form",
-        "text": "Login",
+        "text": "Sign In",
         "attributes": {
           "type": "submit",
-          "class": "btn btn-primary"
+          "class": "btn-login"
         },
         "location": {
           "x": 320,
-          "y": 410
+          "y": 470
         },
         "size": {
           "width": 320,
           "height": 44
         },
         "color": "rgb(255, 255, 255)",
-        "background_color": "rgb(13, 110, 253)",
+        "background_color": "rgb(79, 70, 229)",
         "neighbor_signature": [
           "form",
           "input",
@@ -127,22 +163,21 @@
       "key": "google_login_button",
       "intended_role": "oauth_button",
       "selector_type": "css",
-      "selector": "#google-login",
+      "selector": "#googleLogin",
       "fallback_selectors": [
-        "button[data-provider='google']",
-        "//button[contains(normalize-space(.), 'Google')]"
+        "button.btn-google",
+        "//button[contains(normalize-space(.), 'Continue with Google')]"
       ],
       "historical_metadata": {
         "tag": "button",
         "parent_tag": "div",
-        "text": "Login with Google",
+        "text": "Continue with Google",
         "attributes": {
-          "data-provider": "google",
-          "class": "btn btn-google"
+          "class": "btn-social btn-google"
         },
         "location": {
           "x": 320,
-          "y": 480
+          "y": 610
         },
         "size": {
           "width": 320,
@@ -161,22 +196,21 @@
       "key": "facebook_login_button",
       "intended_role": "oauth_button",
       "selector_type": "css",
-      "selector": "#facebook-login",
+      "selector": "#facebookLogin",
       "fallback_selectors": [
-        "button[data-provider='facebook']",
-        "//button[contains(normalize-space(.), 'Facebook')]"
+        "button.btn-facebook",
+        "//button[contains(normalize-space(.), 'Continue with Facebook')]"
       ],
       "historical_metadata": {
         "tag": "button",
         "parent_tag": "div",
-        "text": "Login with Facebook",
+        "text": "Continue with Facebook",
         "attributes": {
-          "data-provider": "facebook",
-          "class": "btn btn-facebook"
+          "class": "btn-social btn-facebook"
         },
         "location": {
           "x": 320,
-          "y": 540
+          "y": 670
         },
         "size": {
           "width": 320,
@@ -203,10 +237,12 @@
       "enabled": true
     },
     "social_auth_handshake": {
-      "enabled": true
+      "enabled": false,
+      "reason": "The current login frontend renders social buttons but does not implement any OAuth click handlers or provider redirect flow."
     },
     "rate_limiting": {
-      "enabled": true,
+      "enabled": false,
+      "reason": "The current Flask backend returns 401 for invalid credentials but does not implement throttling or adaptive rate limiting.",
       "invalid_attempts": 10,
       "expected_indicators": [
         "429",

@@ -78,6 +78,14 @@ def require_social_credentials(suite_config, provider: str) -> tuple[str, str]:
     return username, password
 
 
+def require_scenario_enabled(suite_config, scenario_name: str) -> None:
+    settings = suite_config.scenarios.get(scenario_name, {})
+    if settings.get("enabled", True):
+        return
+    reason = settings.get("reason", f"{scenario_name} is disabled in config/test_suite.json")
+    pytest.skip(reason)
+
+
 @contextmanager
 def managed_runtime(suite_config, browser_name: str) -> Iterator[FrameworkRuntime]:
     browser_session = BrowserSession(suite_config.environment)
@@ -115,7 +123,9 @@ def open_login_page(runtime: FrameworkRuntime, suite_config) -> None:
 
 
 def login_with_password(runtime: FrameworkRuntime, suite_config, password: str | None = None) -> None:
+    ensure_test_user(suite_config)
     runtime.actions.type("login_email_input", suite_config.credentials.email)
+    runtime.actions.type("login_phone_input", suite_config.credentials.phone)
     runtime.actions.type("login_password_input", password or suite_config.credentials.password)
     runtime.actions.click("login_button")
 
@@ -123,9 +133,9 @@ def login_with_password(runtime: FrameworkRuntime, suite_config, password: str |
 def inject_dynamic_id_change(runtime: FrameworkRuntime) -> None:
     runtime.driver.execute_script(
         """
-        const button = document.querySelector('#login-button');
+        const button = document.querySelector('#loginButton');
         if (button) {
-          button.id = 'login-button-mutated';
+          button.id = 'loginButtonMutated';
         }
         """
     )
@@ -134,7 +144,7 @@ def inject_dynamic_id_change(runtime: FrameworkRuntime) -> None:
 def inject_popup_overlay(runtime: FrameworkRuntime) -> None:
     runtime.driver.execute_script(
         """
-        const target = document.querySelector('#google-login') || document.querySelector("button[data-provider='google']");
+        const target = document.querySelector('#googleLogin') || document.querySelector("button.btn-google");
         if (!target) return;
         if (document.getElementById('__codex_blocker__')) return;
         const rect = target.getBoundingClientRect();
@@ -228,17 +238,29 @@ def complete_social_provider_login(runtime: FrameworkRuntime, provider: str, use
 
 
 def repeat_failed_login(runtime: FrameworkRuntime, suite_config, attempts: int) -> list[dict[str, str]]:
+    ensure_test_user(suite_config)
     observations: list[dict[str, str]] = []
     for _ in range(attempts):
         runtime.driver.get(suite_config.environment.base_url)
         runtime.dom_monitor.install(runtime.driver)
         runtime.actions.type("login_email_input", suite_config.credentials.email)
+        runtime.actions.type("login_phone_input", suite_config.credentials.phone)
         runtime.actions.type("login_password_input", "definitely-wrong-password")
         runtime.actions.click("login_button")
+        error_state = runtime.driver.execute_script(
+            """
+            const el = document.getElementById('errorMessage');
+            return {
+              text: el ? (el.textContent || '').trim() : '',
+              visible: Boolean(el && getComputedStyle(el).display !== 'none')
+            };
+            """
+        )
         observations.append(
             {
                 "url": runtime.driver.current_url,
                 "page_source_excerpt": runtime.driver.page_source[:1000],
+                "visible_error": error_state["text"] if error_state["visible"] else "",
             }
         )
     return observations
@@ -246,10 +268,20 @@ def repeat_failed_login(runtime: FrameworkRuntime, suite_config, attempts: int) 
 
 def assert_authenticated_state(runtime: FrameworkRuntime, base_url: str) -> None:
     token_data = capture_auth_token(runtime)
+    success_state = runtime.driver.execute_script(
+        """
+        const el = document.getElementById('successMessage');
+        return {
+          text: el ? (el.textContent || '').trim() : '',
+          visible: Boolean(el && getComputedStyle(el).display !== 'none')
+        };
+        """
+    )
     page_source = runtime.driver.page_source.lower()
     indicators = (
         runtime.driver.current_url != base_url,
         any(value for value in token_data.values() if value and value != base_url),
+        success_state["visible"] and "login successful" in success_state["text"].lower(),
         "logout" in page_source,
         "dashboard" in page_source,
         "welcome" in page_source,
@@ -258,16 +290,13 @@ def assert_authenticated_state(runtime: FrameworkRuntime, base_url: str) -> None
 
 
 def healing_log_contains(element_key: str, root: str | Path = "artifacts") -> bool:
-    path = Path(root) / "healed_elements.jsonl"
+    path = Path(root) / "healed_elements.json"
     if not path.exists():
         return False
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            payload = json.loads(line)
-            if payload.get("element_key") == element_key and payload.get("success"):
-                return True
+    payloads = json.loads(path.read_text(encoding="utf-8"))
+    for payload in payloads:
+        if payload.get("element_key") == element_key and payload.get("success"):
+            return True
     return False
 
 
@@ -282,3 +311,31 @@ def _click_if_present(runtime: FrameworkRuntime, by: str, selector: str) -> None
     elements = runtime.driver.find_elements(by, selector)
     if elements:
         elements[0].click()
+
+
+def ensure_test_user(suite_config) -> None:
+    url = f"{suite_config.environment.api_base_url.rstrip('/')}/register"
+    payload = json.dumps(
+        {
+            "email": suite_config.credentials.email,
+            "phone": suite_config.credentials.phone,
+            "password": suite_config.credentials.password,
+        }
+    ).encode("utf-8")
+    req = request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=5) as response:
+            if response.status == 201:
+                return
+    except error.HTTPError as exc:
+        if exc.code == 409:
+            return
+        detail = exc.read().decode("utf-8", errors="replace")
+        pytest.skip(f"Could not prepare test user via {url}: HTTP {exc.code} {detail}")
+    except error.URLError as exc:
+        pytest.skip(f"Could not prepare test user via {url}: {exc.reason}")

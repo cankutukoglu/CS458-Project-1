@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,6 +13,9 @@ class ArtifactManager:
         self.dom_root = self.root / "dom_snapshots"
         self.screenshot_root = self.root / "screenshots"
         self.run_log_root = self.root / "run_logs"
+        self._ensure_structure()
+
+    def _ensure_structure(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         self.dom_root.mkdir(parents=True, exist_ok=True)
         self.screenshot_root.mkdir(parents=True, exist_ok=True)
@@ -36,3 +40,20 @@ class ArtifactManager:
         path = self.run_log_root / f"{stamp}.log"
         path.write_text(message, encoding="utf-8")
         return path
+
+    def reset(self) -> Path:
+        self._ensure_structure()
+        for child in self.root.iterdir():
+            if child.is_file() and child.name != ".gitkeep":
+                child.unlink()
+        for directory in (self.dom_root, self.screenshot_root, self.run_log_root):
+            self._clear_directory(directory)
+        return self.root
+
+    @staticmethod
+    def _clear_directory(directory: Path) -> None:
+        for child in directory.iterdir():
+            if child.is_dir():
+                shutil.rmtree(child)
+            elif child.is_file() and child.name != ".gitkeep":
+                child.unlink()
