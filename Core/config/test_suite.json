@@ -1,0 +1,219 @@
+{
+  "environment": {
+    "base_url": "http://localhost:8000",
+    "api_base_url": "http://localhost:8000",
+    "browser_matrix": ["chrome", "firefox"],
+    "default_timeout_seconds": 10,
+    "headless": false
+  },
+  "credentials": {
+    "email": "student@example.com",
+    "phone": "+15555550123",
+    "password": "ChangeMe123!",
+    "google_username": "",
+    "google_password": "",
+    "facebook_username": "",
+    "facebook_password": ""
+  },
+  "elements": [
+    {
+      "key": "login_email_input",
+      "intended_role": "input",
+      "selector_type": "css",
+      "selector": "#email",
+      "fallback_selectors": [
+        "input[name='email']",
+        "input[type='email']"
+      ],
+      "historical_metadata": {
+        "tag": "input",
+        "parent_tag": "form",
+        "text": "",
+        "attributes": {
+          "name": "email",
+          "type": "email",
+          "placeholder": "Email"
+        },
+        "location": {
+          "x": 320,
+          "y": 280
+        },
+        "size": {
+          "width": 320,
+          "height": 44
+        },
+        "color": "rgb(33, 37, 41)",
+        "background_color": "rgb(255, 255, 255)",
+        "neighbor_signature": [
+          "form",
+          "input",
+          "button"
+        ],
+        "last_verified_at": "2026-02-28T18:00:00+03:00"
+      }
+    },
+    {
+      "key": "login_password_input",
+      "intended_role": "input",
+      "selector_type": "css",
+      "selector": "#password",
+      "fallback_selectors": [
+        "input[name='password']",
+        "input[type='password']"
+      ],
+      "historical_metadata": {
+        "tag": "input",
+        "parent_tag": "form",
+        "text": "",
+        "attributes": {
+          "name": "password",
+          "type": "password",
+          "placeholder": "Password"
+        },
+        "location": {
+          "x": 320,
+          "y": 340
+        },
+        "size": {
+          "width": 320,
+          "height": 44
+        },
+        "color": "rgb(33, 37, 41)",
+        "background_color": "rgb(255, 255, 255)",
+        "neighbor_signature": [
+          "form",
+          "input",
+          "button"
+        ],
+        "last_verified_at": "2026-02-28T18:00:00+03:00"
+      }
+    },
+    {
+      "key": "login_button",
+      "intended_role": "button",
+      "selector_type": "css",
+      "selector": "#login-button",
+      "fallback_selectors": [
+        "button[type='submit']",
+        "//button[contains(normalize-space(.), 'Login')]"
+      ],
+      "historical_metadata": {
+        "tag": "button",
+        "parent_tag": "form",
+        "text": "Login",
+        "attributes": {
+          "type": "submit",
+          "class": "btn btn-primary"
+        },
+        "location": {
+          "x": 320,
+          "y": 410
+        },
+        "size": {
+          "width": 320,
+          "height": 44
+        },
+        "color": "rgb(255, 255, 255)",
+        "background_color": "rgb(13, 110, 253)",
+        "neighbor_signature": [
+          "form",
+          "input",
+          "button"
+        ],
+        "last_verified_at": "2026-02-28T18:00:00+03:00"
+      }
+    },
+    {
+      "key": "google_login_button",
+      "intended_role": "oauth_button",
+      "selector_type": "css",
+      "selector": "#google-login",
+      "fallback_selectors": [
+        "button[data-provider='google']",
+        "//button[contains(normalize-space(.), 'Google')]"
+      ],
+      "historical_metadata": {
+        "tag": "button",
+        "parent_tag": "div",
+        "text": "Login with Google",
+        "attributes": {
+          "data-provider": "google",
+          "class": "btn btn-google"
+        },
+        "location": {
+          "x": 320,
+          "y": 480
+        },
+        "size": {
+          "width": 320,
+          "height": 44
+        },
+        "color": "rgb(33, 37, 41)",
+        "background_color": "rgb(255, 255, 255)",
+        "neighbor_signature": [
+          "div",
+          "button"
+        ],
+        "last_verified_at": "2026-02-28T18:00:00+03:00"
+      }
+    },
+    {
+      "key": "facebook_login_button",
+      "intended_role": "oauth_button",
+      "selector_type": "css",
+      "selector": "#facebook-login",
+      "fallback_selectors": [
+        "button[data-provider='facebook']",
+        "//button[contains(normalize-space(.), 'Facebook')]"
+      ],
+      "historical_metadata": {
+        "tag": "button",
+        "parent_tag": "div",
+        "text": "Login with Facebook",
+        "attributes": {
+          "data-provider": "facebook",
+          "class": "btn btn-facebook"
+        },
+        "location": {
+          "x": 320,
+          "y": 540
+        },
+        "size": {
+          "width": 320,
+          "height": 44
+        },
+        "color": "rgb(255, 255, 255)",
+        "background_color": "rgb(24, 119, 242)",
+        "neighbor_signature": [
+          "div",
+          "button"
+        ],
+        "last_verified_at": "2026-02-28T18:00:00+03:00"
+      }
+    }
+  ],
+  "scenarios": {
+    "dynamic_id_recovery": {
+      "enabled": true
+    },
+    "multimodal_failure": {
+      "enabled": true
+    },
+    "cross_browser_css_breakage": {
+      "enabled": true
+    },
+    "social_auth_handshake": {
+      "enabled": true
+    },
+    "rate_limiting": {
+      "enabled": true,
+      "invalid_attempts": 10,
+      "expected_indicators": [
+        "429",
+        "too many",
+        "retry later",
+        "locked"
+      ]
+    }
+  }
+}
