@@ -8,21 +8,6 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 
-from google import genai
-from google.genai import types as genai_types
-
-log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
-
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash"
-_gemini_client = None
-
-if GEMINI_API_KEY:
-    _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    log.info("Gemini API configured – LLM fraud analysis enabled (model: %s)", GEMINI_MODEL)
-else:
-    log.warning("GEMINI_API_KEY not set – falling back to simulated fraud analysis")
 
 from google import genai
 from google.genai import types as genai_types
@@ -104,6 +89,78 @@ def get_client_ip():
     return request.headers.get("X-Real-IP") or \
            request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or \
            request.remote_addr or "unknown"
+
+
+def create_login_log(
+    *,
+    user,
+    email,
+    ip_address,
+    user_agent,
+    success,
+    risk_score=0,
+    risk_factors=None,
+    fraud_analysis=None,
+    action_taken="allowed",
+):
+    login_log = LoginLog(
+        user_id=user.id if user else None,
+        email_attempted=email,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        success=success,
+        risk_score=risk_score,
+        risk_factors=json.dumps(risk_factors or []),
+        fraud_analysis=json.dumps(fraud_analysis) if fraud_analysis else None,
+        action_taken=action_taken,
+    )
+    db.session.add(login_log)
+    return login_log
+
+
+def deny_login_for_status(user, email, ip_address, user_agent, account_status, error_message):
+    risk_factor = "SUSPENDED_ACCOUNT" if account_status == ACCOUNT_SUSPENDED else "LOCKED_ACCOUNT"
+    create_login_log(
+        user=user,
+        email=email,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        success=False,
+        risk_score=100,
+        risk_factors=[risk_factor],
+        action_taken="denied",
+    )
+    db.session.commit()
+    return jsonify({
+        "error": error_message,
+        "account_status": account_status,
+    }), 403
+
+
+def simulate_fraud_analysis(prompt_context):
+    recommendation = "allow_with_monitoring"
+    verdict = "LOW_RISK"
+
+    if prompt_context["risk_score"] >= RISK_CRITICAL:
+        verdict = "HIGH_RISK"
+        recommendation = "lock_account"
+    elif prompt_context["risk_score"] >= RISK_HIGH:
+        verdict = "MEDIUM_RISK"
+        recommendation = "challenge_user"
+
+    reasoning = (
+        f"Rule-based fallback evaluated risk score {prompt_context['risk_score']}/100 "
+        f"with factors: {', '.join(prompt_context['risk_factors']) or 'none'}."
+    )
+
+    return {
+        "verdict": verdict,
+        "reasoning": reasoning,
+        "recommendation": recommendation,
+        "prompt_context": prompt_context,
+        "model": "rule-based-fallback",
+        "analyzed_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def compute_risk_score(user, email, ip_address, user_agent):
@@ -227,7 +284,7 @@ def llm_fraud_analysis(email, ip_address, user_agent, risk_score, risk_factors):
         except Exception as e:
             log.error("Gemini API call failed, falling back to simulation: %s", e)
 
- 
+    return simulate_fraud_analysis(prompt_context)
 
 
 def apply_risk_action(user, risk_score, fraud_result):
@@ -306,32 +363,24 @@ def login():
     user = User.query.filter_by(email=email).first()
 
     if user and user.account_status == ACCOUNT_SUSPENDED:
-        log = LoginLog(
-            user_id=user.id, email_attempted=email, ip_address=ip_address,
-            user_agent=user_agent, success=False, risk_score=100,
-            risk_factors=json.dumps(["SUSPENDED_ACCOUNT"]),
-            action_taken="denied"
+        return deny_login_for_status(
+            user,
+            email,
+            ip_address,
+            user_agent,
+            ACCOUNT_SUSPENDED,
+            "Account is suspended. Please contact support.",
         )
-        db.session.add(log)
-        db.session.commit()
-        return jsonify({
-            "error": "Account is suspended. Please contact support.",
-            "account_status": ACCOUNT_SUSPENDED,
-        }), 403
 
     if user and user.account_status == ACCOUNT_LOCKED:
-        log = LoginLog(
-            user_id=user.id, email_attempted=email, ip_address=ip_address,
-            user_agent=user_agent, success=False, risk_score=100,
-            risk_factors=json.dumps(["LOCKED_ACCOUNT"]),
-            action_taken="denied"
+        return deny_login_for_status(
+            user,
+            email,
+            ip_address,
+            user_agent,
+            ACCOUNT_LOCKED,
+            "Account is locked due to suspicious activity. Please contact support.",
         )
-        db.session.add(log)
-        db.session.commit()
-        return jsonify({
-            "error": "Account is locked due to suspicious activity. Please contact support.",
-            "account_status": ACCOUNT_LOCKED,
-        }), 403
 
     risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
 
@@ -345,14 +394,17 @@ def login():
     if risk_score >= RISK_HIGH and user:
         action = apply_risk_action(user, risk_score, fraud_analysis)
         if action == "locked":
-            log = LoginLog(
-                user_id=user.id, email_attempted=email, ip_address=ip_address,
-                user_agent=user_agent, success=False, risk_score=risk_score,
-                risk_factors=json.dumps(risk_factors),
-                fraud_analysis=json.dumps(fraud_analysis),
-                action_taken="locked"
+            create_login_log(
+                user=user,
+                email=email,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                success=False,
+                risk_score=risk_score,
+                risk_factors=risk_factors,
+                fraud_analysis=fraud_analysis,
+                action_taken="locked",
             )
-            db.session.add(log)
             db.session.commit()
             return jsonify({
                 "error": "Account locked due to suspicious activity.",
@@ -375,15 +427,17 @@ def login():
             else:
                 action = "denied"
 
-        log = LoginLog(
-            user_id=user.id if user else None,
-            email_attempted=email, ip_address=ip_address,
-            user_agent=user_agent, success=False, risk_score=risk_score,
-            risk_factors=json.dumps(risk_factors),
-            fraud_analysis=json.dumps(fraud_analysis) if fraud_analysis else None,
-            action_taken=action
+        create_login_log(
+            user=user,
+            email=email,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            success=False,
+            risk_score=risk_score,
+            risk_factors=risk_factors,
+            fraud_analysis=fraud_analysis,
+            action_taken=action,
         )
-        db.session.add(log)
         db.session.commit()
 
         remaining = max(0, FAILED_ATTEMPTS_LOCK - (user.failed_attempts if user else 0))
@@ -405,14 +459,17 @@ def login():
     if user.account_status == ACCOUNT_CHALLENGED:
         user.account_status = ACCOUNT_ACTIVE
 
-    log = LoginLog(
-        user_id=user.id, email_attempted=email, ip_address=ip_address,
-        user_agent=user_agent, success=True, risk_score=risk_score,
-        risk_factors=json.dumps(risk_factors),
-        fraud_analysis=json.dumps(fraud_analysis) if fraud_analysis else None,
-        action_taken=action
+    create_login_log(
+        user=user,
+        email=email,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        success=True,
+        risk_score=risk_score,
+        risk_factors=risk_factors,
+        fraud_analysis=fraud_analysis,
+        action_taken=action,
     )
-    db.session.add(log)
     db.session.commit()
 
     response = {
