@@ -221,3 +221,77 @@ body {
     font-size: 14px;
     text-align: center;
 }
+
+.warning-message {
+    margin-top: 10px;
+    padding: 12px;
+    background-color: #fffbeb;
+    color: #d97706;
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    font-size: 14px;
+    text-align: center;
+}
+
+/* ── Risk Assessment Panel ───────────────────────────────────────────────── */
+
+.risk-panel {
+    margin-top: 16px;
+    padding: 16px;
+    background-color: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    font-size: 13px;
+    color: #334155;
+}
+
+.risk-header {
+    font-weight: 700;
+    font-size: 14px;
+    margin-bottom: 10px;
+    color: #1e293b;
+}
+
+.risk-score {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 13px;
+    margin-bottom: 10px;
+}
+
+.risk-low { background: #dcfce7; color: #166534; }
+.risk-medium { background: #fef9c3; color: #854d0e; }
+.risk-high { background: #fed7aa; color: #9a3412; }
+.risk-critical { background: #fecaca; color: #991b1b; }
+
+.risk-factors ul {
+    margin: 6px 0 10px 18px;
+    padding: 0;
+}
+
+.risk-factors li {
+    margin-bottom: 4px;
+    line-height: 1.4;
+}
+
+.fraud-analysis {
+    margin-top: 10px;
+    padding: 10px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+}
+
+.analysis-verdict {
+    font-weight: 700;
+    margin: 6px 0 4px;
+    color: #dc2626;
+}
+
+.analysis-reasoning {
+    font-size: 12px;
+    line-height: 1.5;
+    color: #64748b;
+}
