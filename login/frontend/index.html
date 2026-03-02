@@ -203,12 +203,27 @@
         // Check for OAuth redirect response
         const urlParams = new URLSearchParams(window.location.search);
         if (urlParams.get("login_success") === "true") {
-            const email = urlParams.get("email");
-            successMessage.textContent = "OAuth Login successful! Email: " + email;
-            successMessage.style.display = "block";
+            // Fetch user info from session instead of reading email from URL
+            fetch("/api/me")
+                .then(res => res.json())
+                .then(data => {
+                    if (data.email) {
+                        successMessage.textContent = "OAuth Login successful! Email: " + data.email;
+                    } else {
+                        successMessage.textContent = "OAuth Login successful!";
+                    }
+                    successMessage.style.display = "block";
+                })
+                .catch(() => {
+                    successMessage.textContent = "OAuth Login successful!";
+                    successMessage.style.display = "block";
+                });
+            // Clean the URL to remove query params from browser history
+            window.history.replaceState({}, document.title, "/index.html");
         } else if (urlParams.get("error")) {
             errorMessage.textContent = urlParams.get("error").replace(/\+/g, ' ');
             errorMessage.style.display = "block";
+            window.history.replaceState({}, document.title, "/index.html");
         }
     </script>
 </body>

@@ -58,11 +58,11 @@ facebook = oauth.register(
     name='facebook',
     client_id=os.environ.get("FACEBOOK_CLIENT_ID"),
     client_secret=os.environ.get("FACEBOOK_CLIENT_SECRET"),
-    access_token_url='https://graph.facebook.com/v12.0/oauth/access_token',
+    access_token_url='https://graph.facebook.com/v19.0/oauth/access_token',
     access_token_params=None,
-    authorize_url='https://www.facebook.com/v12.0/dialog/oauth',
+    authorize_url='https://www.facebook.com/v19.0/dialog/oauth',
     authorize_params=None,
-    api_base_url='https://graph.facebook.com/v12.0/',
+    api_base_url='https://graph.facebook.com/v19.0/',
     client_kwargs={'scope': 'email public_profile'}
 )
 
@@ -93,8 +93,6 @@ class User(db.Model):
     account_status = db.Column(db.String(20), default=ACCOUNT_ACTIVE, nullable=False)
     failed_attempts = db.Column(db.Integer, default=0, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-    status = db.Column(db.String(20), default="Active")
-    failed_attempts = db.Column(db.Integer, default=0)
     locked_until = db.Column(db.DateTime, nullable=True)
 
     login_logs = db.relationship("LoginLog", backref="user", lazy="dynamic")
@@ -609,30 +607,47 @@ def login_google():
 
 @app.route("/api/login/google/callback")
 def auth_google():
+    ip_address = get_client_ip()
+    user_agent = request.headers.get("User-Agent", "")
+
     try:
         token = google.authorize_access_token()
-        user_info = google.parse_id_token(token, nonce=None)
+        user_info = token.get("userinfo")
         if not user_info:
             resp = google.get("userinfo")
             user_info = resp.json()
     except Exception as e:
+        log.error("Google OAuth callback failed: %s", e)
         return redirect("/index.html?error=Google+login+failed")
-    
+
     email = user_info.get("email")
     if not email:
         return redirect("/index.html?error=No+email+provided+from+Google")
-    
+
+    email = email.strip().lower()
     user = User.query.filter_by(email=email).first()
     if not user:
         user = User(
             email=email,
-            phone="oauth-dummy-phone",
-            password_hash="oauth",
+            phone="oauth-google",
+            password_hash=generate_password_hash(os.urandom(32).hex()),
         )
         db.session.add(user)
         db.session.commit()
-    
-    return redirect(f"/index.html?login_success=true&email={email}")
+
+    create_login_log(
+        user=user,
+        email=email,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        success=True,
+        action_taken="oauth_google",
+    )
+    db.session.commit()
+
+    session["user_id"] = user.id
+    session["email"] = email
+    return redirect("/index.html?login_success=true")
 
 @app.route("/api/login/facebook")
 def login_facebook():
@@ -641,30 +656,61 @@ def login_facebook():
 
 @app.route("/api/login/facebook/callback")
 def auth_facebook():
+    ip_address = get_client_ip()
+    user_agent = request.headers.get("User-Agent", "")
+
     try:
         token = facebook.authorize_access_token()
         resp = facebook.get("me?fields=id,name,email")
         user_info = resp.json()
     except Exception as e:
+        log.error("Facebook OAuth callback failed: %s", e)
         return redirect("/index.html?error=Facebook+login+failed")
-    
+
     email = user_info.get("email")
     if not email:
-        # Fallback if no email is provided (Facebook allows sign-up with phone only sometimes)
         email = f"{user_info.get('id')}@facebook.invalid"
-    
+
+    email = email.strip().lower()
     user = User.query.filter_by(email=email).first()
     if not user:
         user = User(
             email=email,
-            phone="oauth-dummy-phone",
-            password_hash="oauth",
+            phone="oauth-facebook",
+            password_hash=generate_password_hash(os.urandom(32).hex()),
         )
         db.session.add(user)
         db.session.commit()
-    
-    return redirect(f"/index.html?login_success=true&email={email}")
 
+    create_login_log(
+        user=user,
+        email=email,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        success=True,
+        action_taken="oauth_facebook",
+    )
+    db.session.commit()
+
+    session["user_id"] = user.id
+    session["email"] = email
+    return redirect("/index.html?login_success=true")
+
+
+
+@app.route("/api/me")
+def me():
+    user_id = session.get("user_id")
+    if not user_id:
+        return jsonify({"error": "Not authenticated"}), 401
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({
+        "id": user.id,
+        "email": user.email,
+        "account_status": user.account_status,
+    }), 200
 
 
 if __name__ == "__main__":
