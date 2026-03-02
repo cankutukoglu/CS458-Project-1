@@ -1,12 +1,15 @@
 import os
 from datetime import datetime, timezone
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, session, url_for
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
+from authlib.integrations.flask_client import OAuth
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 CORS(app)
 
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key")
@@ -17,6 +20,32 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 
+oauth = OAuth(app)
+
+google = oauth.register(
+    name='google',
+    client_id=os.environ.get("GOOGLE_CLIENT_ID"),
+    client_secret=os.environ.get("GOOGLE_CLIENT_SECRET"),
+    access_token_url='https://accounts.google.com/o/oauth2/token',
+    access_token_params=None,
+    authorize_url='https://accounts.google.com/o/oauth2/auth',
+    authorize_params=None,
+    api_base_url='https://www.googleapis.com/oauth2/v1/',
+    client_kwargs={'scope': 'openid email profile'},
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration'
+)
+
+facebook = oauth.register(
+    name='facebook',
+    client_id=os.environ.get("FACEBOOK_CLIENT_ID"),
+    client_secret=os.environ.get("FACEBOOK_CLIENT_SECRET"),
+    access_token_url='https://graph.facebook.com/v12.0/oauth/access_token',
+    access_token_params=None,
+    authorize_url='https://www.facebook.com/v12.0/dialog/oauth',
+    authorize_params=None,
+    api_base_url='https://graph.facebook.com/v12.0/',
+    client_kwargs={'scope': 'email public_profile'}
+)
 
 # ── Models ───────────────────────────────────────────────────────────────────
 
@@ -28,6 +57,9 @@ class User(db.Model):
     phone = db.Column(db.String(30), nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    status = db.Column(db.String(20), default="Active")
+    failed_attempts = db.Column(db.Integer, default=0)
+    locked_until = db.Column(db.DateTime, nullable=True)
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -95,6 +127,69 @@ def login():
             "phone": user.phone,
         },
     }), 200
+
+@app.route("/api/login/google")
+def login_google():
+    redirect_uri = url_for("auth_google", _external=True)
+    return google.authorize_redirect(redirect_uri)
+
+@app.route("/api/login/google/callback")
+def auth_google():
+    try:
+        token = google.authorize_access_token()
+        user_info = google.parse_id_token(token, nonce=None)
+        if not user_info:
+            resp = google.get("userinfo")
+            user_info = resp.json()
+    except Exception as e:
+        return redirect("/index.html?error=Google+login+failed")
+    
+    email = user_info.get("email")
+    if not email:
+        return redirect("/index.html?error=No+email+provided+from+Google")
+    
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        user = User(
+            email=email,
+            phone="oauth-dummy-phone",
+            password_hash="oauth",
+        )
+        db.session.add(user)
+        db.session.commit()
+    
+    return redirect(f"/index.html?login_success=true&email={email}")
+
+@app.route("/api/login/facebook")
+def login_facebook():
+    redirect_uri = url_for("auth_facebook", _external=True)
+    return facebook.authorize_redirect(redirect_uri)
+
+@app.route("/api/login/facebook/callback")
+def auth_facebook():
+    try:
+        token = facebook.authorize_access_token()
+        resp = facebook.get("me?fields=id,name,email")
+        user_info = resp.json()
+    except Exception as e:
+        return redirect("/index.html?error=Facebook+login+failed")
+    
+    email = user_info.get("email")
+    if not email:
+        # Fallback if no email is provided (Facebook allows sign-up with phone only sometimes)
+        email = f"{user_info.get('id')}@facebook.invalid"
+    
+    user = User.query.filter_by(email=email).first()
+    if not user:
+        user = User(
+            email=email,
+            phone="oauth-dummy-phone",
+            password_hash="oauth",
+        )
+        db.session.add(user)
+        db.session.commit()
+    
+    return redirect(f"/index.html?login_success=true&email={email}")
 
 
 # ── Start ────────────────────────────────────────────────────────────────────

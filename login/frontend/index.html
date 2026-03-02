@@ -127,6 +127,26 @@
                 errorMessage.style.display = "block";
             }
         });
+
+        // OAuth buttons
+        document.getElementById("googleLogin").addEventListener("click", () => {
+            window.location.href = "/api/login/google";
+        });
+
+        document.getElementById("facebookLogin").addEventListener("click", () => {
+            window.location.href = "/api/login/facebook";
+        });
+
+        // Check for OAuth redirect response
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.get("login_success") === "true") {
+            const email = urlParams.get("email");
+            successMessage.textContent = "OAuth Login successful! Email: " + email;
+            successMessage.style.display = "block";
+        } else if (urlParams.get("error")) {
+            errorMessage.textContent = urlParams.get("error").replace(/\+/g, ' ');
+            errorMessage.style.display = "block";
+        }
     </script>
 </body>
 </html>
