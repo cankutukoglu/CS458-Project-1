@@ -79,7 +79,9 @@
         </div>
 
         <div id="errorMessage" class="error-message" style="display:none;"></div>
+        <div id="warningMessage" class="warning-message" style="display:none;"></div>
         <div id="successMessage" class="success-message" style="display:none;"></div>
+        <div id="riskPanel" class="risk-panel" style="display:none;"></div>
 
         <p class="signup-link">
             Don't have an account? <a href="signup.html">Sign Up</a>
@@ -88,7 +90,48 @@
 
     <script>
         const errorMessage = document.getElementById("errorMessage");
+        const warningMessage = document.getElementById("warningMessage");
         const successMessage = document.getElementById("successMessage");
+        const riskPanel = document.getElementById("riskPanel");
+
+        function hideAllMessages() {
+            errorMessage.style.display = "none";
+            warningMessage.style.display = "none";
+            successMessage.style.display = "none";
+            riskPanel.style.display = "none";
+        }
+
+        function showRiskPanel(data) {
+            if (data.risk_score === undefined && !data.risk_factors && !data.fraud_analysis) return;
+
+            let html = '<div class="risk-header">Risk Assessment</div>';
+
+            if (data.risk_score !== undefined) {
+                const level = data.risk_score >= 90 ? "critical" :
+                              data.risk_score >= 75 ? "high" :
+                              data.risk_score >= 50 ? "medium" : "low";
+                html += `<div class="risk-score risk-${level}">Score: ${data.risk_score}/100 (${level.toUpperCase()})</div>`;
+            }
+
+            if (data.risk_factors && data.risk_factors.length > 0) {
+                html += '<div class="risk-factors"><strong>Factors:</strong><ul>';
+                data.risk_factors.forEach(f => {
+                    html += `<li>${f}</li>`;
+                });
+                html += '</ul></div>';
+            }
+
+            if (data.fraud_analysis) {
+                html += '<div class="fraud-analysis">';
+                html += `<strong>LLM Fraud Analysis:</strong>`;
+                html += `<div class="analysis-verdict">${data.fraud_analysis.verdict}</div>`;
+                html += `<div class="analysis-reasoning">${data.fraud_analysis.reasoning}</div>`;
+                html += '</div>';
+            }
+
+            riskPanel.innerHTML = html;
+            riskPanel.style.display = "block";
+        }
 
         document.getElementById("togglePassword").addEventListener("click", function () {
             const passwordInput = document.getElementById("password");
@@ -99,11 +142,14 @@
 
         document.getElementById("loginForm").addEventListener("submit", async function (e) {
             e.preventDefault();
-            errorMessage.style.display = "none";
-            successMessage.style.display = "none";
+            hideAllMessages();
 
             const email = document.getElementById("email").value.trim();
             const password = document.getElementById("password").value;
+
+            const loginButton = document.getElementById("loginButton");
+            loginButton.disabled = true;
+            loginButton.textContent = "Signing in...";
 
             try {
                 const res = await fetch("/api/login", {
@@ -117,14 +163,31 @@
                 if (!res.ok) {
                     errorMessage.textContent = data.error || "Login failed";
                     errorMessage.style.display = "block";
+
+                    if (data.warning) {
+                        warningMessage.textContent = data.warning;
+                        warningMessage.style.display = "block";
+                    }
+
+                    if (data.account_status === "locked") {
+                        errorMessage.textContent = "Account locked due to suspicious activity. Contact support.";
+                    } else if (data.account_status === "suspended") {
+                        errorMessage.textContent = "Account is suspended. Contact support.";
+                    }
+
+                    showRiskPanel(data);
                     return;
                 }
 
                 successMessage.textContent = "Login successful!";
                 successMessage.style.display = "block";
+                showRiskPanel(data);
             } catch (err) {
                 errorMessage.textContent = "Network error. Please try again.";
                 errorMessage.style.display = "block";
+            } finally {
+                loginButton.disabled = false;
+                loginButton.textContent = "Sign In";
             }
         });
 

@@ -29,6 +29,7 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-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}
       FACEBOOK_CLIENT_ID: ${FACEBOOK_CLIENT_ID:-1465456308589447}
       FACEBOOK_CLIENT_SECRET: ${FACEBOOK_CLIENT_SECRET:-1aff9622f27ce5cff46c3c60becdf01c}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy
