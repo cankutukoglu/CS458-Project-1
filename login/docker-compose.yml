@@ -25,6 +25,10 @@ services:
       FLASK_ENV: ${FLASK_ENV:-development}
       DATABASE_URL: postgresql://${POSTGRES_USER:-ares_user}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-ares}
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-121299157104-1ekgsfu6g1ue3ufh283dicne4l6794nf.apps.googleusercontent.com}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-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}
+      FACEBOOK_CLIENT_ID: ${FACEBOOK_CLIENT_ID:-1465456308589447}
+      FACEBOOK_CLIENT_SECRET: ${FACEBOOK_CLIENT_SECRET:-1aff9622f27ce5cff46c3c60becdf01c}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     depends_on:
       db:
