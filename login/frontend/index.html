@@ -140,6 +140,8 @@
             this.textContent = isHidden ? "Hide" : "Show";
         });
 
+        const loginButton = document.getElementById("loginButton");
+
         document.getElementById("loginForm").addEventListener("submit", async function (e) {
             e.preventDefault();
             hideAllMessages();
@@ -147,9 +149,10 @@
             const email = document.getElementById("email").value.trim();
             const password = document.getElementById("password").value;
 
-            const loginButton = document.getElementById("loginButton");
-            loginButton.disabled = true;
-            loginButton.textContent = "Signing in...";
+            if (loginButton) {
+                loginButton.disabled = true;
+                loginButton.textContent = "Signing in...";
+            }
 
             try {
                 const res = await fetch("/api/login", {
@@ -186,8 +189,10 @@
                 errorMessage.textContent = "Network error. Please try again.";
                 errorMessage.style.display = "block";
             } finally {
-                loginButton.disabled = false;
-                loginButton.textContent = "Sign In";
+                if (loginButton) {
+                    loginButton.disabled = false;
+                    loginButton.textContent = "Sign In";
+                }
             }
         });
 

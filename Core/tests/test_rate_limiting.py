@@ -21,7 +21,7 @@ def test_rate_limiting(suite_config):
     with managed_runtime(suite_config, "chrome") as runtime:
         observations = repeat_failed_login(runtime, suite_config, attempts)
         combined_text = " ".join(
-            f"{item['page_source_excerpt']} {item['visible_error']}" for item in observations
+            f"{item['page_source_excerpt']} {item['visible_error']} {item.get('visible_warning', '')}" for item in observations
         ).lower()
         combined_urls = " ".join(item["url"] for item in observations).lower()
         assert any(

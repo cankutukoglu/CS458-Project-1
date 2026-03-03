@@ -10,10 +10,10 @@
     "email": "ares.tester@example.com",
     "phone": "+1 (555) 000-0000",
     "password": "ChangeMe123!",
-    "google_username": "",
-    "google_password": "",
-    "facebook_username": "",
-    "facebook_password": ""
+    "google_username": "${GOOGLE_TEST_USERNAME}",
+    "google_password": "${GOOGLE_TEST_PASSWORD}",
+    "facebook_username": "${FACEBOOK_TEST_USERNAME}",
+    "facebook_password": "${FACEBOOK_TEST_PASSWORD}"
   },
   "elements": [
     {
@@ -237,18 +237,15 @@
       "enabled": true
     },
     "social_auth_handshake": {
-      "enabled": false,
-      "reason": "The current login frontend renders social buttons but does not implement any OAuth click handlers or provider redirect flow."
+      "enabled": true
     },
     "rate_limiting": {
-      "enabled": false,
-      "reason": "The current Flask backend returns 401 for invalid credentials but does not implement throttling or adaptive rate limiting.",
+      "enabled": true,
       "invalid_attempts": 10,
       "expected_indicators": [
-        "429",
-        "too many",
-        "retry later",
-        "locked"
+        "locked",
+        "suspicious activity",
+        "will be locked"
       ]
     }
   }

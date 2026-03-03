@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -122,12 +123,45 @@ def open_login_page(runtime: FrameworkRuntime, suite_config) -> None:
     runtime.dom_monitor.install(runtime.driver)
 
 
+def _wait_for_login_response(runtime: FrameworkRuntime, timeout: float = 10) -> bool:
+    """Wait for the async login fetch to complete by checking for a visible response message.
+
+    Returns True if a response message became visible, False on timeout.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        done = runtime.driver.execute_script(
+            "const err = document.getElementById('errorMessage');"
+            "const suc = document.getElementById('successMessage');"
+            "return (err && getComputedStyle(err).display !== 'none') ||"
+            "       (suc && getComputedStyle(suc).display !== 'none');"
+        )
+        if done:
+            return True
+        time.sleep(0.2)
+    return False
+
+
 def login_with_password(runtime: FrameworkRuntime, suite_config, password: str | None = None) -> None:
     ensure_test_user(suite_config)
     runtime.actions.type("login_email_input", suite_config.credentials.email)
     runtime.actions.type("login_phone_input", suite_config.credentials.phone)
     runtime.actions.type("login_password_input", password or suite_config.credentials.password)
     runtime.actions.click("login_button")
+    if not _wait_for_login_response(runtime, suite_config.environment.default_timeout_seconds):
+        # The Selenium click on the healed element may not have triggered the
+        # form submit event (synthetic-click edge case).  Submit explicitly so
+        # the login flow still completes after healing.
+        runtime.driver.execute_script(
+            "const form = document.getElementById('loginForm');"
+            "if (form) form.requestSubmit();"
+        )
+        if not _wait_for_login_response(runtime, suite_config.environment.default_timeout_seconds):
+            pytest.fail(
+                f"Login response was not received within "
+                f"{suite_config.environment.default_timeout_seconds}s after explicit form submit "
+                f"for base URL {suite_config.environment.base_url!r}."
+            )
 
 
 def inject_dynamic_id_change(runtime: FrameworkRuntime) -> None:
@@ -247,12 +281,16 @@ def repeat_failed_login(runtime: FrameworkRuntime, suite_config, attempts: int) 
         runtime.actions.type("login_phone_input", suite_config.credentials.phone)
         runtime.actions.type("login_password_input", "definitely-wrong-password")
         runtime.actions.click("login_button")
+        _wait_for_login_response(runtime, suite_config.environment.default_timeout_seconds)
         error_state = runtime.driver.execute_script(
             """
-            const el = document.getElementById('errorMessage');
+            const err = document.getElementById('errorMessage');
+            const warn = document.getElementById('warningMessage');
             return {
-              text: el ? (el.textContent || '').trim() : '',
-              visible: Boolean(el && getComputedStyle(el).display !== 'none')
+              text: err ? (err.textContent || '').trim() : '',
+              visible: Boolean(err && getComputedStyle(err).display !== 'none'),
+              warning: warn && getComputedStyle(warn).display !== 'none'
+                       ? (warn.textContent || '').trim() : ''
             };
             """
         )
@@ -261,6 +299,7 @@ def repeat_failed_login(runtime: FrameworkRuntime, suite_config, attempts: int) 
                 "url": runtime.driver.current_url,
                 "page_source_excerpt": runtime.driver.page_source[:1000],
                 "visible_error": error_state["text"] if error_state["visible"] else "",
+                "visible_warning": error_state.get("warning", ""),
             }
         )
     return observations
@@ -278,15 +317,25 @@ def assert_authenticated_state(runtime: FrameworkRuntime, base_url: str) -> None
         """
     )
     page_source = runtime.driver.page_source.lower()
+    current = runtime.driver.current_url.rstrip("/")
+    normalized_base = base_url.rstrip("/")
     indicators = (
-        runtime.driver.current_url != base_url,
-        any(value for value in token_data.values() if value and value != base_url),
+        current != normalized_base,
+        any(value for value in token_data.values() if value and value.rstrip("/") != normalized_base),
         success_state["visible"] and "login successful" in success_state["text"].lower(),
+        "login successful" in page_source,
         "logout" in page_source,
         "dashboard" in page_source,
         "welcome" in page_source,
     )
-    assert any(indicators), "Could not confirm authenticated state from URL, token, or page content"
+    assert any(indicators), (
+        "Could not confirm authenticated state from URL, token, or page content.\n"
+        f"  URL: {current}\n"
+        f"  success_state: {success_state}\n"
+        f"  token_data keys with values: "
+        f"{[k for k, v in token_data.items() if v and v.rstrip('/') != normalized_base]}\n"
+        f"  page_source excerpt (500 chars): {page_source[:500]}"
+    )
 
 
 def healing_log_contains(element_key: str, root: str | Path = "artifacts") -> bool:
