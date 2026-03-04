@@ -49,18 +49,6 @@ google = oauth.register(
     client_kwargs={'scope': 'openid email profile'},
 )
 
-facebook = oauth.register(
-    name='facebook',
-    client_id=os.environ.get("FACEBOOK_CLIENT_ID"),
-    client_secret=os.environ.get("FACEBOOK_CLIENT_SECRET"),
-    access_token_url='https://graph.facebook.com/v19.0/oauth/access_token',
-    access_token_params=None,
-    authorize_url='https://www.facebook.com/v19.0/dialog/oauth',
-    authorize_params=None,
-    api_base_url='https://graph.facebook.com/v19.0/',
-    client_kwargs={'scope': 'email public_profile'}
-)
-
 ACCOUNT_ACTIVE = "active"
 ACCOUNT_CHALLENGED = "challenged"
 ACCOUNT_LOCKED = "locked"
@@ -643,54 +631,6 @@ def auth_google():
     session["user_id"] = user.id
     session["email"] = email
     return redirect("/index.html?login_success=true")
-
-@app.route("/api/login/facebook")
-def login_facebook():
-    redirect_uri = url_for("auth_facebook", _external=True)
-    return facebook.authorize_redirect(redirect_uri)
-
-@app.route("/api/login/facebook/callback")
-def auth_facebook():
-    ip_address = get_client_ip()
-    user_agent = request.headers.get("User-Agent", "")
-
-    try:
-        token = facebook.authorize_access_token()
-        resp = facebook.get("me?fields=id,name,email")
-        user_info = resp.json()
-    except Exception as e:
-        log.error("Facebook OAuth callback failed: %s", e)
-        return redirect("/index.html?error=Facebook+login+failed")
-
-    email = user_info.get("email")
-    if not email:
-        email = f"{user_info.get('id')}@facebook.invalid"
-
-    email = email.strip().lower()
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        user = User(
-            email=email,
-            phone="oauth-facebook",
-            password_hash=generate_password_hash(os.urandom(32).hex()),
-        )
-        db.session.add(user)
-        db.session.commit()
-
-    create_login_log(
-        user=user,
-        email=email,
-        ip_address=ip_address,
-        user_agent=user_agent,
-        success=True,
-        action_taken="oauth_facebook",
-    )
-    db.session.commit()
-
-    session["user_id"] = user.id
-    session["email"] = email
-    return redirect("/index.html?login_success=true")
-
 
 
 @app.route("/api/me")
