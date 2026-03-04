@@ -356,6 +356,156 @@ def _click_if_present(runtime: FrameworkRuntime, by: str, selector: str) -> None
         elements[0].click()
 
 
+def inject_class_mutation(runtime: FrameworkRuntime) -> None:
+    """Change element classes to test heuristic class overlap scoring."""
+    runtime.driver.execute_script(
+        """
+        const button = document.querySelector('#loginButton');
+        if (button) {
+            button.id = '';
+            button.className = 'submit-action primary-btn';
+        }
+        """
+    )
+
+
+def inject_element_relocation(runtime: FrameworkRuntime) -> None:
+    """Move login button to a different parent to test parent_tag heuristics."""
+    runtime.driver.execute_script(
+        """
+        const button = document.querySelector('#loginButton');
+        const container = document.querySelector('.login-container');
+        if (button && container) {
+            button.id = '';
+            const wrapper = document.createElement('section');
+            wrapper.id = 'relocated-wrapper';
+            wrapper.appendChild(button.cloneNode(true));
+            container.appendChild(wrapper);
+            button.remove();
+        }
+        """
+    )
+
+
+def inject_text_content_change(runtime: FrameworkRuntime) -> None:
+    """Change button text to test text similarity heuristics."""
+    runtime.driver.execute_script(
+        """
+        const button = document.querySelector('#loginButton');
+        if (button) {
+            button.id = '';
+            button.textContent = 'Log In Now';
+        }
+        """
+    )
+
+
+def inject_attribute_mutation(runtime: FrameworkRuntime) -> None:
+    """Change input attributes to test attribute similarity scoring."""
+    runtime.driver.execute_script(
+        """
+        const email = document.querySelector('#email');
+        if (email) {
+            email.id = '';
+            email.name = 'user_email';
+            email.placeholder = 'Enter email address';
+        }
+        """
+    )
+
+
+def inject_delayed_element(runtime: FrameworkRuntime, delay_ms: int = 2000) -> None:
+    """Remove element and re-add it after a delay to test async waiting."""
+    runtime.driver.execute_script(
+        f"""
+        const button = document.querySelector('#loginButton');
+        if (button) {{
+            const parent = button.parentNode;
+            const clone = button.cloneNode(true);
+            clone.id = 'loginButtonDelayed';
+            button.remove();
+            setTimeout(() => parent.appendChild(clone), {delay_ms});
+        }}
+        """
+    )
+
+
+def inject_multiple_mutations(runtime: FrameworkRuntime) -> None:
+    """Apply multiple simultaneous mutations to stress test healing."""
+    runtime.driver.execute_script(
+        """
+        const email = document.querySelector('#email');
+        const password = document.querySelector('#password');
+        const button = document.querySelector('#loginButton');
+
+        if (email) {
+            email.id = 'userEmail';
+            email.placeholder = 'Your email here';
+        }
+        if (password) {
+            password.id = 'userPass';
+            password.className = 'secure-input';
+        }
+        if (button) {
+            button.id = 'submitBtn';
+            button.textContent = 'Login';
+        }
+        """
+    )
+
+
+def reset_user_state(suite_config, email: str) -> bool:
+    """Reset user account to active state via admin API."""
+    url = f"{suite_config.environment.api_base_url.rstrip('/')}/admin/user-status"
+    payload = json.dumps({"email": email, "status": "active"}).encode("utf-8")
+    req = request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=5) as response:
+            return response.status == 200
+    except error.HTTPError:
+        return False
+    except error.URLError:
+        return False
+
+
+def get_user_status(suite_config, email: str) -> str | None:
+    """Get current user account status via login logs API."""
+    url = f"{suite_config.environment.api_base_url.rstrip('/')}/login-logs?email={email}&limit=1"
+    req = request.Request(url, method="GET")
+    try:
+        with request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            if data:
+                return data[0].get("action_taken")
+    except (error.HTTPError, error.URLError):
+        pass
+    return None
+
+
+def api_login(suite_config, email: str, password: str) -> dict:
+    """Perform login via API and return response."""
+    url = f"{suite_config.environment.api_base_url.rstrip('/')}/login"
+    payload = json.dumps({"email": email, "password": password}).encode("utf-8")
+    req = request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=5) as response:
+            return {"status": response.status, "data": json.loads(response.read().decode("utf-8"))}
+    except error.HTTPError as exc:
+        return {"status": exc.code, "data": json.loads(exc.read().decode("utf-8"))}
+    except error.URLError as exc:
+        return {"status": 0, "error": str(exc.reason)}
+
+
 def ensure_test_user(suite_config) -> None:
     url = f"{suite_config.environment.api_base_url.rstrip('/')}/register"
     payload = json.dumps(
