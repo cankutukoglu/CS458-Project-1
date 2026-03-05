@@ -2,7 +2,7 @@ import os
 import json
 import logging
 from datetime import datetime, timezone, timedelta
-from urllib import request as url_request, error as url_error
+from urllib import request as url_request, error as url_error, parse as url_parse
 
 from flask import Flask, request, jsonify, redirect, session, url_for
 from flask_sqlalchemy import SQLAlchemy
@@ -22,6 +22,9 @@ AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-01-0
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
+RECAPTCHA_SITE_KEY = os.environ.get("RECAPTCHA_SITE_KEY", "").strip()
+RECAPTCHA_SECRET_KEY = os.environ.get("RECAPTCHA_SECRET_KEY", "").strip()
+RECAPTCHA_VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
 
 _llm_provider = None
 _gemini_client = None
@@ -143,6 +146,45 @@ def create_login_log(
     )
     db.session.add(login_log)
     return login_log
+
+
+def is_recaptcha_enabled():
+    return bool(RECAPTCHA_SITE_KEY and RECAPTCHA_SECRET_KEY)
+
+
+def verify_recaptcha_token(token, remote_ip):
+    if not is_recaptcha_enabled():
+        return True, None
+
+    if not token:
+        return False, "Please complete the reCAPTCHA challenge."
+
+    payload = {
+        "secret": RECAPTCHA_SECRET_KEY,
+        "response": token,
+    }
+    if remote_ip:
+        payload["remoteip"] = remote_ip
+
+    encoded_payload = url_parse.urlencode(payload).encode("utf-8")
+    verify_request = url_request.Request(
+        RECAPTCHA_VERIFY_URL,
+        data=encoded_payload,
+        method="POST",
+    )
+
+    try:
+        with url_request.urlopen(verify_request, timeout=5) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except (url_error.URLError, TimeoutError, ValueError) as exc:
+        log.warning("reCAPTCHA verification failed due to upstream/network issue: %s", exc)
+        return False, "Could not verify reCAPTCHA. Please try again."
+
+    if not result.get("success", False):
+        log.info("reCAPTCHA validation rejected token with errors: %s", result.get("error-codes", []))
+        return False, "reCAPTCHA challenge failed. Please try again."
+
+    return True, None
 
 
 def deny_login_for_status(user, email, ip_address, user_agent, account_status, error_message):
@@ -390,6 +432,15 @@ def health():
     return {"status": "ok"}, 200
 
 
+@app.route("/api/recaptcha-config", methods=["GET"])
+def recaptcha_config():
+    return jsonify({
+        "enabled": is_recaptcha_enabled(),
+        "site_key": RECAPTCHA_SITE_KEY if is_recaptcha_enabled() else "",
+        "mode": "challenged_login_only",
+    }), 200
+
+
 @app.route("/api/register", methods=["POST"])
 def register():
     data = request.get_json(silent=True)
@@ -471,6 +522,55 @@ def login():
 
     risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
 
+    if user and user.account_status == ACCOUNT_CHALLENGED and is_recaptcha_enabled():
+        recaptcha_token = (data.get("recaptcha_token") or "").strip()
+        recaptcha_ok, recaptcha_error = verify_recaptcha_token(recaptcha_token, ip_address)
+        if not recaptcha_ok:
+            user.failed_attempts += 1
+            action = "denied"
+            if user.failed_attempts >= FAILED_ATTEMPTS_LOCK:
+                user.account_status = ACCOUNT_LOCKED
+                action = "locked"
+            elif user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:
+                if user.account_status == ACCOUNT_ACTIVE:
+                    user.account_status = ACCOUNT_CHALLENGED
+                action = "challenged"
+
+            recaptcha_risk_factors = list(risk_factors)
+            recaptcha_risk_factors.append("RECAPTCHA_FAILED: Required challenge not completed or invalid")
+
+            create_login_log(
+                user=user,
+                email=email,
+                ip_address=ip_address,
+                user_agent=user_agent,
+                success=False,
+                risk_score=risk_score,
+                risk_factors=recaptcha_risk_factors,
+                fraud_analysis=None,
+                action_taken=action,
+            )
+            db.session.commit()
+
+            if user.account_status == ACCOUNT_LOCKED:
+                return jsonify({
+                    "error": "Account locked due to suspicious activity.",
+                    "account_status": ACCOUNT_LOCKED,
+                    "risk_score": risk_score,
+                    "risk_factors": recaptcha_risk_factors,
+                }), 403
+
+            remaining = max(0, FAILED_ATTEMPTS_LOCK - user.failed_attempts)
+            return jsonify({
+                "error": recaptcha_error,
+                "code": "recaptcha_failed",
+                "challenge_required": True,
+                "account_status": ACCOUNT_CHALLENGED,
+                "warning": f"Account will be locked after {remaining} more failed attempts",
+                "risk_score": risk_score,
+                "risk_factors": recaptcha_risk_factors,
+            }), 403
+
     fraud_analysis = None
     if risk_score >= RISK_HIGH:
         fraud_analysis = llm_fraud_analysis(
@@ -535,6 +635,9 @@ def login():
         if user and user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:
             response["warning"] = f"Account will be locked after {remaining} more failed attempts"
             response["account_status"] = user.account_status
+            response["challenge_required"] = bool(
+                is_recaptcha_enabled() and user.account_status == ACCOUNT_CHALLENGED
+            )
         if risk_factors:
             response["risk_factors"] = risk_factors
         if fraud_analysis:
