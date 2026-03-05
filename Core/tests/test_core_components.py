@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from framework.llm.client import GeminiSelectorRepairClient, create_selector_repair_client
+from framework.llm.client import AzureOpenAISelectorRepairClient, GeminiSelectorRepairClient, create_selector_repair_client
 from framework.config.loader import ConfigLoader
 from framework.llm.parser import infer_selector_type, parse_selector_response
 from framework.utils.scoring import score_candidates
@@ -101,3 +101,13 @@ def test_selector_client_factory_supports_gemini(monkeypatch):
     client = create_selector_repair_client()
     assert isinstance(client, GeminiSelectorRepairClient)
     assert client.provider_name == "gemini"
+
+
+def test_selector_client_factory_supports_azure_openai(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "azure_openai")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
+    client = create_selector_repair_client()
+    assert isinstance(client, AzureOpenAISelectorRepairClient)
+    assert client.provider_name == "azure_openai"
