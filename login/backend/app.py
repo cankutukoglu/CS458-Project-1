@@ -297,6 +297,95 @@ def finalize_oauth_login(user, email, ip_address, user_agent, action_taken):
     session["email"] = email
 
 
+def _finalize_oauth_with_risk(user, email, ip_address, user_agent, provider):
+    # ── 1. Suspended: permanent deny ─────────────────────────────────────
+    if user.account_status == ACCOUNT_SUSPENDED:
+        create_login_log(
+            user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+            success=False, risk_score=100, risk_factors=["SUSPENDED_ACCOUNT"],
+            action_taken="denied",
+        )
+        db.session.commit()
+        log.warning("OAuth login denied — suspended account: %s", email)
+        return redirect("/index.html?error=Account+suspended.+Please+contact+support.")
+
+    # ── 2. Locked: try auto-unlock, deny if still locked ─────────────────
+    if user.account_status == ACCOUNT_LOCKED:
+        if not maybe_unlock_account(user):
+            risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
+            remaining_secs = 0
+            if user.locked_until:
+                lu = user.locked_until
+                if lu.tzinfo is None:
+                    lu = lu.replace(tzinfo=timezone.utc)
+                remaining_secs = max(0, int((lu - datetime.now(timezone.utc)).total_seconds()))
+            create_login_log(
+                user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+                success=False, risk_score=risk_score, risk_factors=risk_factors,
+                action_taken="denied",
+            )
+            db.session.commit()
+            log.warning(
+                "OAuth login denied — account still locked (%ds remaining): %s",
+                remaining_secs, email,
+            )
+            return redirect(
+                f"/index.html?error=Account+locked.+Auto-unlocks+in+{remaining_secs}+second(s)."
+            )
+
+    # ── 3. Compute risk score ─────────────────────────────────────────────
+    risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
+
+    # ── 4. LLM fraud analysis ─────────────────────────────────────────────
+    fraud_analysis = (
+        llm_fraud_analysis(email, ip_address, user_agent, risk_score, risk_factors)
+        if risk_score >= RISK_HIGH
+        else None
+    )
+
+    # ── 5. Apply risk action ──────────────────────────────────────────────
+    action = apply_risk_action(user, risk_score, fraud_analysis)
+
+    if action in (ACCOUNT_LOCKED, ACCOUNT_SUSPENDED):
+        create_login_log(
+            user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+            success=False, risk_score=risk_score, risk_factors=risk_factors,
+            fraud_analysis=fraud_analysis, action_taken=action,
+        )
+        db.session.commit()
+        log.warning(
+            "OAuth login denied via risk action '%s' (score=%d): %s",
+            action, risk_score, email,
+        )
+        if action == ACCOUNT_SUSPENDED:
+            return redirect(
+                "/index.html?error=Account+suspended+due+to+suspicious+activity."
+            )
+        return redirect("/index.html?error=Account+locked+due+to+suspicious+activity.")
+
+    # ── 6. Grant session ──────────────────────────────────────────────────
+    # If the account was CHALLENGED (flagged from prior failed password
+    # attempts), a successful OAuth verification proves legitimate ownership
+    # — reset it back to ACTIVE.
+    if user.account_status == ACCOUNT_CHALLENGED:
+        user.account_status = ACCOUNT_ACTIVE
+        user.failed_attempts = 0
+        log.info("Account reset CHALLENGED → ACTIVE via OAuth (%s): %s", provider, email)
+
+    create_login_log(
+        user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+        success=True, risk_score=risk_score, risk_factors=risk_factors,
+        fraud_analysis=fraud_analysis, action_taken=f"oauth_{provider}",
+    )
+    db.session.commit()
+    session["user_id"] = user.id
+    session["email"] = email
+    log.info(
+        "OAuth login granted (provider=%s, score=%d): %s", provider, risk_score, email
+    )
+    return redirect("/index.html?login_success=true")
+
+
 def simulate_fraud_analysis(prompt_context):
     recommendation = "allow_with_monitoring"
     verdict = "LOW_RISK"
@@ -908,9 +997,7 @@ def auth_google():
 
     email = email.strip().lower()
     user = find_or_create_oauth_user(email, "google", user_info.get("sub"))
-    finalize_oauth_login(user, email, ip_address, user_agent, "oauth_google")
-
-    return redirect("/index.html?login_success=true")
+    return _finalize_oauth_with_risk(user, email, ip_address, user_agent, "google")
 
 
 @app.route("/api/login/github")
@@ -955,8 +1042,7 @@ def auth_github():
 
     email = email.strip().lower()
     user = find_or_create_oauth_user(email, "github", str(user_info.get("id", "")))
-    finalize_oauth_login(user, email, ip_address, user_agent, "oauth_github")
-    return redirect("/index.html?login_success=true")
+    return _finalize_oauth_with_risk(user, email, ip_address, user_agent, "github")
 
 
 @app.route("/api/me")
