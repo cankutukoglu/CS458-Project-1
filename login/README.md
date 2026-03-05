@@ -22,6 +22,30 @@ docker compose up --build
 
 Once running, open **http://localhost:8080** in your browser.
 
+## OAuth Login Setup
+
+### Google OAuth 2.0
+
+Set in `.env`:
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+
+Authorized redirect URI:
+- `http://localhost:8080/api/login/google/callback`
+
+### GitHub OAuth App
+
+Set in `.env`:
+- `GITHUB_CLIENT_ID`
+- `GITHUB_CLIENT_SECRET`
+
+Authorization callback URL:
+- `http://localhost:8080/api/login/github/callback`
+
+Notes:
+- GitHub login uses OAuth app credentials (Client ID + Client Secret), not a generic API key.
+- If user email is private on GitHub, the app requests `user:email` scope and uses verified email from the email API.
+
 ## Google reCAPTCHA Challenge
 
 ARES supports Google reCAPTCHA v2 checkbox for challenged login attempts.

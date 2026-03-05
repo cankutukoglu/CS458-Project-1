@@ -66,6 +66,16 @@ google = oauth.register(
     client_kwargs={'scope': 'openid email profile'},
 )
 
+github = oauth.register(
+    name='github',
+    client_id=os.environ.get("GITHUB_CLIENT_ID"),
+    client_secret=os.environ.get("GITHUB_CLIENT_SECRET"),
+    access_token_url='https://github.com/login/oauth/access_token',
+    authorize_url='https://github.com/login/oauth/authorize',
+    api_base_url='https://api.github.com/',
+    client_kwargs={'scope': 'read:user user:email'},
+)
+
 ACCOUNT_ACTIVE = "active"
 ACCOUNT_CHALLENGED = "challenged"
 ACCOUNT_LOCKED = "locked"
@@ -204,6 +214,39 @@ def deny_login_for_status(user, email, ip_address, user_agent, account_status, e
         "error": error_message,
         "account_status": account_status,
     }), 403
+
+
+def find_or_create_oauth_user(email, provider, provider_id=None):
+    email = (email or "").strip().lower()
+    user = User.query.filter_by(email=email).first()
+    if user:
+        return user
+
+    # Keep the synthetic phone unique for each OAuth-created account.
+    synthetic_suffix = (provider_id or os.urandom(4).hex()).replace(" ", "")[:12]
+    synthetic_phone = f"oauth-{provider}-{synthetic_suffix}"
+    user = User(
+        email=email,
+        phone=synthetic_phone,
+        password_hash=generate_password_hash(os.urandom(32).hex()),
+    )
+    db.session.add(user)
+    db.session.commit()
+    return user
+
+
+def finalize_oauth_login(user, email, ip_address, user_agent, action_taken):
+    create_login_log(
+        user=user,
+        email=email,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        success=True,
+        action_taken=action_taken,
+    )
+    db.session.commit()
+    session["user_id"] = user.id
+    session["email"] = email
 
 
 def simulate_fraud_analysis(prompt_context):
@@ -785,28 +828,55 @@ def auth_google():
         return redirect("/index.html?error=No+email+provided+from+Google")
 
     email = email.strip().lower()
-    user = User.query.filter_by(email=email).first()
-    if not user:
-        user = User(
-            email=email,
-            phone="oauth-google",
-            password_hash=generate_password_hash(os.urandom(32).hex()),
-        )
-        db.session.add(user)
-        db.session.commit()
+    user = find_or_create_oauth_user(email, "google", user_info.get("sub"))
+    finalize_oauth_login(user, email, ip_address, user_agent, "oauth_google")
 
-    create_login_log(
-        user=user,
-        email=email,
-        ip_address=ip_address,
-        user_agent=user_agent,
-        success=True,
-        action_taken="oauth_google",
-    )
-    db.session.commit()
+    return redirect("/index.html?login_success=true")
 
-    session["user_id"] = user.id
-    session["email"] = email
+
+@app.route("/api/login/github")
+def login_github():
+    if not os.environ.get("GITHUB_CLIENT_ID") or not os.environ.get("GITHUB_CLIENT_SECRET"):
+        return redirect("/index.html?error=GitHub+OAuth+is+not+configured")
+    redirect_uri = url_for("auth_github", _external=True)
+    return github.authorize_redirect(redirect_uri)
+
+
+@app.route("/api/login/github/callback")
+def auth_github():
+    ip_address = get_client_ip()
+    user_agent = request.headers.get("User-Agent", "")
+
+    try:
+        token = github.authorize_access_token()
+        user_info_resp = github.get("user", token=token)
+        user_info = user_info_resp.json() if user_info_resp else {}
+    except Exception as e:
+        log.error("GitHub OAuth callback failed: %s", e)
+        return redirect("/index.html?error=GitHub+login+failed")
+
+    email = user_info.get("email")
+    if not email:
+        try:
+            emails_resp = github.get("user/emails", token=token)
+            emails = emails_resp.json() if emails_resp else []
+            primary_verified = next(
+                (item for item in emails if item.get("primary") and item.get("verified")),
+                None,
+            )
+            any_verified = next((item for item in emails if item.get("verified")), None)
+            chosen = primary_verified or any_verified
+            email = chosen.get("email") if chosen else None
+        except Exception as e:
+            log.error("GitHub email lookup failed: %s", e)
+            email = None
+
+    if not email:
+        return redirect("/index.html?error=No+public+or+verified+email+from+GitHub")
+
+    email = email.strip().lower()
+    user = find_or_create_oauth_user(email, "github", str(user_info.get("id", "")))
+    finalize_oauth_login(user, email, ip_address, user_agent, "oauth_github")
     return redirect("/index.html?login_success=true")
 
 
