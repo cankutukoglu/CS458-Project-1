@@ -24,11 +24,12 @@ Once running, open **http://localhost:8080** in your browser.
 
 ## Services
 
-| Service    | URL                              | Description                  |
-|------------|----------------------------------|------------------------------|
-| Frontend   | http://localhost:8080             | Nginx – serves HTML/CSS/JS   |
-| Backend    | http://localhost:8080/api/health  | Flask – through Nginx proxy   |
-| PostgreSQL | localhost:5433                    | Database                      |
+| Service    | URL                              | Description                        |
+|------------|----------------------------------|------------------------------------|
+| Frontend   | http://localhost:8080            | Nginx – serves HTML/CSS/JS         |
+| Backend    | http://localhost:8080/api/health | Flask – through Nginx proxy        |
+| Backend    | http://localhost:5001/api/health | Flask – direct access (debug only) |
+| PostgreSQL | localhost:5433                   | Database                           |
 
 ## Useful Commands
 
