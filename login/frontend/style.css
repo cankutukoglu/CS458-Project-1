@@ -145,6 +145,12 @@ body {
     background-color: #4338ca;
 }
 
+.recaptcha-wrapper {
+    margin: 10px 0 4px;
+    display: flex;
+    justify-content: center;
+}
+
 .divider {
     display: flex;
     align-items: center;

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>ARES – Login</title>
     <link rel="stylesheet" href="style.css" />
+    <script src="https://www.google.com/recaptcha/api.js" async defer></script>
 </head>
 <body>
     <div class="login-container">
@@ -56,6 +57,10 @@
                 </div>
             </div>
 
+            <div class="recaptcha-wrapper" id="recaptchaWrapper" style="display: none;">
+                <div id="recaptchaWidget"></div>
+            </div>
+
             <button type="submit" class="btn-login" id="loginButton">
                 Sign In
             </button>
@@ -91,6 +96,14 @@
         const warningMessage = document.getElementById("warningMessage");
         const successMessage = document.getElementById("successMessage");
         const riskPanel = document.getElementById("riskPanel");
+        const recaptchaWrapper = document.getElementById("recaptchaWrapper");
+        const recaptchaWidget = document.getElementById("recaptchaWidget");
+        let recaptchaConfigLoaded = false;
+        let recaptchaEnabled = false;
+        let recaptchaSiteKey = "";
+        let recaptchaWidgetId = null;
+        let challengeRequired = false;
+        const loginButton = document.getElementById("loginButton");
 
         // Login method toggle (email vs phone)
         let loginMethod = "email";
@@ -132,6 +145,73 @@
             riskPanel.style.display = "none";
         }
 
+        function waitForRecaptchaLibrary(timeoutMs = 5000) {
+            return new Promise((resolve) => {
+                const start = Date.now();
+                const timer = setInterval(() => {
+                    if (window.grecaptcha && typeof window.grecaptcha.render === "function") {
+                        clearInterval(timer);
+                        resolve(window.grecaptcha);
+                        return;
+                    }
+
+                    if (Date.now() - start > timeoutMs) {
+                        clearInterval(timer);
+                        resolve(null);
+                    }
+                }, 100);
+            });
+        }
+
+        async function loadRecaptchaConfig() {
+            if (recaptchaConfigLoaded) {
+                return;
+            }
+            recaptchaConfigLoaded = true;
+
+            try {
+                const res = await fetch("/api/recaptcha-config");
+                if (!res.ok) return;
+                const config = await res.json();
+
+                if (!config.enabled || !config.site_key) {
+                    return;
+                }
+
+                recaptchaEnabled = true;
+                recaptchaSiteKey = config.site_key;
+            } catch (_err) {
+                recaptchaEnabled = false;
+                recaptchaSiteKey = "";
+            }
+        }
+
+        async function ensureRecaptchaVisible() {
+            await loadRecaptchaConfig();
+            if (!recaptchaEnabled || !recaptchaSiteKey) {
+                errorMessage.textContent = "Security challenge is required but not configured.";
+                errorMessage.style.display = "block";
+                return false;
+            }
+
+            recaptchaWrapper.style.display = "flex";
+            if (recaptchaWidgetId !== null) {
+                return true;
+            }
+
+            const grecaptcha = await waitForRecaptchaLibrary();
+            if (!grecaptcha) {
+                errorMessage.textContent = "Security challenge failed to load. Disable blockers and refresh.";
+                errorMessage.style.display = "block";
+                return false;
+            }
+
+            recaptchaWidgetId = grecaptcha.render(recaptchaWidget, {
+                sitekey: recaptchaSiteKey,
+            });
+            return true;
+        }
+
         function showRiskPanel(data) {
             if (data.risk_score === undefined && !data.risk_factors && !data.fraud_analysis) return;
 
@@ -171,8 +251,6 @@
             this.textContent = isHidden ? "Hide" : "Show";
         });
 
-        const loginButton = document.getElementById("loginButton");
-
         document.getElementById("loginForm").addEventListener("submit", async function (e) {
             e.preventDefault();
             hideAllMessages();
@@ -184,6 +262,15 @@
                 payload.email = document.getElementById("email").value.trim();
             } else {
                 payload.phone = document.getElementById("phone").value.trim();
+            }
+
+            if (challengeRequired) {
+                await ensureRecaptchaVisible();
+                const recaptchaToken =
+                    window.grecaptcha && recaptchaWidgetId !== null
+                        ? window.grecaptcha.getResponse(recaptchaWidgetId)
+                        : "";
+                payload.recaptcha_token = recaptchaToken;
             }
 
             if (loginButton) {
@@ -204,6 +291,22 @@
                     errorMessage.textContent = data.error || "Login failed";
                     errorMessage.style.display = "block";
 
+                    if (data.challenge_required) {
+                        challengeRequired = true;
+                        warningMessage.textContent = "Additional verification required. Complete reCAPTCHA and try again.";
+                        warningMessage.style.display = "block";
+                        await ensureRecaptchaVisible();
+                    }
+
+                    if (
+                        challengeRequired &&
+                        window.grecaptcha &&
+                        recaptchaWidgetId !== null &&
+                        (data.challenge_required || data.code === "recaptcha_failed")
+                    ) {
+                        window.grecaptcha.reset(recaptchaWidgetId);
+                    }
+
                     if (data.warning) {
                         warningMessage.textContent = data.warning;
                         warningMessage.style.display = "block";
@@ -222,6 +325,8 @@
                 successMessage.textContent = "Login successful!";
                 successMessage.style.display = "block";
                 showRiskPanel(data);
+                challengeRequired = false;
+                recaptchaWrapper.style.display = "none";
             } catch (err) {
                 errorMessage.textContent = "Network error. Please try again.";
                 errorMessage.style.display = "block";
@@ -263,6 +368,8 @@
             errorMessage.style.display = "block";
             window.history.replaceState({}, document.title, "/index.html");
         }
+
+        loadRecaptchaConfig();
     </script>
 </body>
 </html>

@@ -22,6 +22,25 @@ docker compose up --build
 
 Once running, open **http://localhost:8080** in your browser.
 
+## Google reCAPTCHA Challenge
+
+ARES supports Google reCAPTCHA v2 checkbox for challenged login attempts.
+
+1. Create keys in Google reCAPTCHA Admin Console (type: **Checkbox v2**).
+2. Add these values to `.env`:
+   - `RECAPTCHA_SITE_KEY`
+   - `RECAPTCHA_SECRET_KEY`
+3. Restart services:
+
+```bash
+docker compose up --build
+```
+
+Behavior:
+- If both variables are set, reCAPTCHA is required only on `/index.html` when the account is in `challenged` state.
+- Signup (`/signup.html`) does not require reCAPTCHA.
+- If either value is missing, reCAPTCHA is disabled and forms work as before.
+
 ## Services
 
 | Service    | URL                              | Description                        |
