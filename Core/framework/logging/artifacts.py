@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import shutil
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -23,7 +23,7 @@ class ArtifactManager:
 
     @staticmethod
     def timestamp() -> str:
-        return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     def write_dom_snapshot(self, element_key: str, page_source: str, timestamp: str | None = None) -> Path:
         stamp = timestamp or self.timestamp()

@@ -125,6 +125,40 @@ class GeminiSelectorRepairClient(SelectorRepairClient):
         return content
 
 
+class AzureOpenAISelectorRepairClient(SelectorRepairClient):
+    provider_name = "azure_openai"
+
+    def __init__(
+        self,
+        api_key: str,
+        endpoint: str,
+        deployment: str,
+        api_version: str | None = None,
+    ) -> None:
+        self.api_key = api_key
+        self.endpoint = endpoint.rstrip("/")
+        self.deployment = deployment
+        self.api_version = api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+
+    def repair_selector(self, payload: dict[str, Any]) -> str:
+        url = f"{self.endpoint}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
+        body = {
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_prompt(payload)},
+            ],
+        }
+        response = _post_json(
+            url,
+            body,
+            headers={
+                "api-key": self.api_key,
+                "Content-Type": "application/json",
+            },
+        )
+        return response["choices"][0]["message"]["content"]
+
+
 def create_selector_repair_client() -> SelectorRepairClient:
     provider = os.getenv("LLM_PROVIDER", "openai").lower()
     if provider == "openai":
@@ -142,6 +176,17 @@ def create_selector_repair_client() -> SelectorRepairClient:
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY is required when LLM_PROVIDER=gemini")
         return GeminiSelectorRepairClient(api_key)
+    if provider in ("azure_openai", "azure"):
+        api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+        if not api_key:
+            raise RuntimeError("AZURE_OPENAI_API_KEY is required when LLM_PROVIDER=azure_openai")
+        if not endpoint:
+            raise RuntimeError("AZURE_OPENAI_ENDPOINT is required when LLM_PROVIDER=azure_openai")
+        if not deployment:
+            raise RuntimeError("AZURE_OPENAI_DEPLOYMENT is required when LLM_PROVIDER=azure_openai")
+        return AzureOpenAISelectorRepairClient(api_key, endpoint, deployment)
     raise RuntimeError(f"Unsupported LLM provider: {provider}")
 
 

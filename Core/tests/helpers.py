@@ -23,7 +23,7 @@ from framework.logging.artifacts import ArtifactManager
 from framework.logging.audit import HealingAuditLogger
 
 
-@dataclass(slots=True)
+@dataclass
 class FrameworkRuntime:
     driver: object
     browser_session: BrowserSession
@@ -65,6 +65,13 @@ def require_llm_credentials() -> None:
         pytest.skip("ANTHROPIC_API_KEY is required for self-healing tests")
     if provider == "gemini" and not os.getenv("GEMINI_API_KEY"):
         pytest.skip("GEMINI_API_KEY is required for self-healing tests")
+    if provider in ("azure_openai", "azure"):
+        if not os.getenv("AZURE_OPENAI_API_KEY"):
+            pytest.skip("AZURE_OPENAI_API_KEY is required for self-healing tests")
+        if not os.getenv("AZURE_OPENAI_ENDPOINT"):
+            pytest.skip("AZURE_OPENAI_ENDPOINT is required for self-healing tests")
+        if not os.getenv("AZURE_OPENAI_DEPLOYMENT"):
+            pytest.skip("AZURE_OPENAI_DEPLOYMENT is required for self-healing tests")
 
 
 def require_social_credentials(suite_config, provider: str) -> tuple[str, str]:

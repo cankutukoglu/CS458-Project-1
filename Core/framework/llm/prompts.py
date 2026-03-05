@@ -10,7 +10,7 @@ Rules:
 3. Prefer a CSS selector when it uniquely identifies the intended element.
 4. If a CSS selector cannot safely identify the element, return a valid XPath.
 5. Output must be a single line with no explanation, no quotes, no markdown, and no code fence.
-6. If the target action is dismissing an overlay, return the selector for the dismiss/close control only."""
+6. IMPORTANT: If mode is "obstacle_repair", an overlay is blocking the target element. You must return the selector for the DISMISS/CLOSE button of the overlay, NOT the original target element. Look for buttons with text like "Close", "Dismiss", "X", or similar within the overlay."""
 
 
 def build_user_prompt(payload: dict[str, Any]) -> str:

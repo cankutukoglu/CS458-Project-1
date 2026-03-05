@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 
-@dataclass(slots=True)
+@dataclass
 class DomSnapshot:
     url: str
     page_source: str
@@ -14,7 +14,7 @@ class DomSnapshot:
     timestamp: str
 
 
-@dataclass(slots=True)
+@dataclass
 class CandidateElement:
     selector_hint: str
     tag: str
@@ -26,7 +26,7 @@ class CandidateElement:
     heuristic_score: float = 0.0
 
 
-@dataclass(slots=True)
+@dataclass
 class HealAttempt:
     element_key: str
     old_selector: str

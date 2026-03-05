@@ -2,6 +2,7 @@ import os
 import json
 import logging
 from datetime import datetime, timezone, timedelta
+from urllib import request as url_request, error as url_error
 
 from flask import Flask, request, jsonify, redirect, session, url_for
 from flask_sqlalchemy import SQLAlchemy
@@ -10,22 +11,35 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
 from authlib.integrations.flask_client import OAuth
 
-
-from google import genai
-from google.genai import types as genai_types
-
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+# LLM Provider Configuration - Azure OpenAI takes priority
+AZURE_OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "")
+AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "")
+AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = "gemini-2.5-flash"
+
+_llm_provider = None
 _gemini_client = None
 
-if GEMINI_API_KEY:
-    _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
-    log.info("Gemini API configured – LLM fraud analysis enabled (model: %s)", GEMINI_MODEL)
+if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT:
+    _llm_provider = "azure_openai"
+    log.info("Azure OpenAI configured – LLM fraud analysis enabled (deployment: %s)", AZURE_OPENAI_DEPLOYMENT)
+elif GEMINI_API_KEY:
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+        _gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+        _llm_provider = "gemini"
+        log.info("Gemini API configured – LLM fraud analysis enabled (model: %s)", GEMINI_MODEL)
+    except ImportError:
+        log.warning("google-genai package not installed – falling back to simulated fraud analysis")
 else:
-    log.warning("GEMINI_API_KEY not set – falling back to simulated fraud analysis")
+    log.warning("No LLM API keys set – falling back to simulated fraud analysis")
 
 app = Flask(__name__)
 app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
@@ -251,10 +265,36 @@ Rules:
 Return ONLY the JSON object, no markdown fences, no extra text."""
 
 
+def _call_azure_openai(prompt_context: dict) -> str:
+    """Call Azure OpenAI API for fraud analysis. Returns raw text content."""
+    url = f"{AZURE_OPENAI_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version={AZURE_OPENAI_API_VERSION}"
+    body = {
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": FRAUD_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Analyze this login attempt:\n{json.dumps(prompt_context, indent=2)}"},
+        ],
+    }
+    encoded = json.dumps(body).encode("utf-8")
+    req = url_request.Request(
+        url,
+        data=encoded,
+        headers={
+            "api-key": AZURE_OPENAI_API_KEY,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with url_request.urlopen(req, timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    content: str = data["choices"][0]["message"]["content"]
+    return content
+
+
 def llm_fraud_analysis(email, ip_address, user_agent, risk_score, risk_factors):
     """
-    Call Gemini API for fraud analysis.
-    Falls back to rule-based simulation if API key is missing or call fails.
+    Call LLM API for fraud analysis.
+    Supports Azure OpenAI and Gemini. Falls back to rule-based simulation if no API configured.
     """
     prompt_context = {
         "email": email,
@@ -265,7 +305,30 @@ def llm_fraud_analysis(email, ip_address, user_agent, risk_score, risk_factors):
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
-    if _gemini_client:
+    if _llm_provider == "azure_openai":
+        try:
+            raw_text = _call_azure_openai(prompt_context)
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[1]
+                raw_text = raw_text.rsplit("```", 1)[0].strip()
+
+            result = json.loads(raw_text)
+
+            for key in ("verdict", "reasoning", "recommendation"):
+                if key not in result:
+                    raise ValueError(f"Missing key '{key}' in Azure OpenAI response")
+
+            result["prompt_context"] = prompt_context
+            result["model"] = AZURE_OPENAI_DEPLOYMENT
+            result["analyzed_at"] = datetime.now(timezone.utc).isoformat()
+            log.info("Azure OpenAI fraud analysis: verdict=%s recommendation=%s",
+                     result["verdict"], result["recommendation"])
+            return result
+
+        except Exception as e:
+            log.error("Azure OpenAI API call failed, falling back to simulation: %s", e)
+
+    elif _llm_provider == "gemini" and _gemini_client:
         try:
             response = _gemini_client.models.generate_content(
                 model=GEMINI_MODEL,
