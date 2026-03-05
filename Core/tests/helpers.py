@@ -502,13 +502,18 @@ def api_login(suite_config, email: str, password: str) -> dict:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    # The backend calls the LLM synchronously when risk_score >= RISK_HIGH (60),
+    # which can happen after ~8 rapid failed attempts (velocity + failed-attempt
+    # factors).  The LLM timeout is 30 s, so allow 35 s here so the server can
+    # finish, commit the DB state, and return a real response.
     try:
-        with request.urlopen(req, timeout=5) as response:
+        with request.urlopen(req, timeout=35) as response:
             return {"status": response.status, "data": json.loads(response.read().decode("utf-8"))}
     except error.HTTPError as exc:
         return {"status": exc.code, "data": json.loads(exc.read().decode("utf-8"))}
-    except error.URLError as exc:
-        return {"status": 0, "error": str(exc.reason)}
+    except (error.URLError, TimeoutError) as exc:
+        reason = exc.reason if isinstance(exc, error.URLError) else exc
+        return {"status": 0, "error": str(reason)}
 
 
 def ensure_test_user(suite_config) -> None:
