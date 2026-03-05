@@ -85,7 +85,7 @@ class User(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False)
-    phone = db.Column(db.String(30), nullable=False)
+    phone = db.Column(db.String(30), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     account_status = db.Column(db.String(20), default=ACCOUNT_ACTIVE, nullable=False)
     failed_attempts = db.Column(db.Integer, default=0, nullable=False)
@@ -410,6 +410,9 @@ def register():
     if User.query.filter_by(email=email).first():
         return jsonify({"error": "An account with this email already exists"}), 409
 
+    if User.query.filter_by(phone=phone).first():
+        return jsonify({"error": "An account with this phone number already exists"}), 409
+
     user = User(
         email=email,
         phone=phone,
@@ -428,15 +431,23 @@ def login():
         return jsonify({"error": "Request body must be JSON"}), 400
 
     email = (data.get("email") or "").strip().lower()
+    phone = (data.get("phone") or "").strip()
     password = data.get("password") or ""
 
-    if not email or not password:
-        return jsonify({"error": "Email and password are required"}), 400
+    if not email and not phone:
+        return jsonify({"error": "Email or phone is required"}), 400
+    if not password:
+        return jsonify({"error": "Password is required"}), 400
 
     ip_address = get_client_ip()
     user_agent = request.headers.get("User-Agent", "")
 
-    user = User.query.filter_by(email=email).first()
+    if email:
+        user = User.query.filter_by(email=email).first()
+    else:
+        user = User.query.filter_by(phone=phone).first()
+        # Use the user's email for logging if found, otherwise use the phone as identifier
+        email = user.email if user else phone
 
     if user and user.account_status == ACCOUNT_SUSPENDED:
         return deny_login_for_status(
@@ -518,7 +529,7 @@ def login():
 
         remaining = max(0, FAILED_ATTEMPTS_LOCK - (user.failed_attempts if user else 0))
         response = {
-            "error": "Invalid email or password",
+            "error": "Invalid credentials",
             "risk_score": risk_score,
         }
         if user and user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:

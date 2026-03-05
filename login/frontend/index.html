@@ -13,8 +13,13 @@
             <p>Sign in to your account</p>
         </div>
 
+        <div class="login-method-toggle" id="loginMethodToggle">
+            <button type="button" class="toggle-btn active" id="toggleEmail" data-method="email">Email</button>
+            <button type="button" class="toggle-btn" id="togglePhone" data-method="phone">Phone</button>
+        </div>
+
         <form id="loginForm">
-            <div class="form-group">
+            <div class="form-group" id="emailGroup">
                 <label for="email">Email</label>
                 <input
                     type="email"
@@ -25,14 +30,13 @@
                 />
             </div>
 
-            <div class="form-group">
+            <div class="form-group" id="phoneGroup" style="display: none;">
                 <label for="phone">Phone</label>
                 <input
                     type="tel"
                     id="phone"
                     name="phone"
                     placeholder="+90 555 123 4567"
-                    required
                 />
             </div>
 
@@ -88,6 +92,39 @@
         const successMessage = document.getElementById("successMessage");
         const riskPanel = document.getElementById("riskPanel");
 
+        // Login method toggle (email vs phone)
+        let loginMethod = "email";
+        const emailGroup = document.getElementById("emailGroup");
+        const phoneGroup = document.getElementById("phoneGroup");
+        const emailInput = document.getElementById("email");
+        const phoneInput = document.getElementById("phone");
+        const toggleEmail = document.getElementById("toggleEmail");
+        const togglePhone = document.getElementById("togglePhone");
+
+        function setLoginMethod(method) {
+            loginMethod = method;
+            if (method === "email") {
+                emailGroup.style.display = "";
+                phoneGroup.style.display = "none";
+                emailInput.required = true;
+                phoneInput.required = false;
+                phoneInput.value = "";
+                toggleEmail.classList.add("active");
+                togglePhone.classList.remove("active");
+            } else {
+                emailGroup.style.display = "none";
+                phoneGroup.style.display = "";
+                emailInput.required = false;
+                phoneInput.required = true;
+                emailInput.value = "";
+                togglePhone.classList.add("active");
+                toggleEmail.classList.remove("active");
+            }
+        }
+
+        toggleEmail.addEventListener("click", () => setLoginMethod("email"));
+        togglePhone.addEventListener("click", () => setLoginMethod("phone"));
+
         function hideAllMessages() {
             errorMessage.style.display = "none";
             warningMessage.style.display = "none";
@@ -140,8 +177,14 @@
             e.preventDefault();
             hideAllMessages();
 
-            const email = document.getElementById("email").value.trim();
             const password = document.getElementById("password").value;
+            const payload = { password };
+
+            if (loginMethod === "email") {
+                payload.email = document.getElementById("email").value.trim();
+            } else {
+                payload.phone = document.getElementById("phone").value.trim();
+            }
 
             if (loginButton) {
                 loginButton.disabled = true;
@@ -152,7 +195,7 @@
                 const res = await fetch("/api/login", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ email, password }),
+                    body: JSON.stringify(payload),
                 });
 
                 const data = await res.json();

@@ -150,7 +150,6 @@ def _wait_for_login_response(runtime: FrameworkRuntime, timeout: float = 10) -> 
 def login_with_password(runtime: FrameworkRuntime, suite_config, password: str | None = None) -> None:
     ensure_test_user(suite_config)
     runtime.actions.type("login_email_input", suite_config.credentials.email)
-    runtime.actions.type("login_phone_input", suite_config.credentials.phone)
     runtime.actions.type("login_password_input", password or suite_config.credentials.password)
     runtime.actions.click("login_button")
     if not _wait_for_login_response(runtime, suite_config.environment.default_timeout_seconds):
@@ -279,7 +278,6 @@ def repeat_failed_login(runtime: FrameworkRuntime, suite_config, attempts: int) 
         runtime.driver.get(suite_config.environment.base_url)
         runtime.dom_monitor.install(runtime.driver)
         runtime.actions.type("login_email_input", suite_config.credentials.email)
-        runtime.actions.type("login_phone_input", suite_config.credentials.phone)
         runtime.actions.type("login_password_input", "definitely-wrong-password")
         runtime.actions.click("login_button")
         _wait_for_login_response(runtime, suite_config.environment.default_timeout_seconds)

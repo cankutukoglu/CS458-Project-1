@@ -39,6 +39,35 @@ body {
     color: #6b7280;
 }
 
+.login-method-toggle {
+    display: flex;
+    margin-bottom: 20px;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.login-method-toggle .toggle-btn {
+    flex: 1;
+    padding: 10px;
+    border: none;
+    background: #f9fafb;
+    font-size: 14px;
+    font-weight: 500;
+    color: #6b7280;
+    cursor: pointer;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.login-method-toggle .toggle-btn.active {
+    background: #4f46e5;
+    color: #fff;
+}
+
+.login-method-toggle .toggle-btn:not(.active):hover {
+    background: #e5e7eb;
+}
+
 .form-group {
     margin-bottom: 16px;
 }
