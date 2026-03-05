@@ -11,7 +11,9 @@
     "phone": "+1 (555) 000-0000",
     "password": "ChangeMe123!",
     "google_username": "${GOOGLE_TEST_USERNAME}",
-    "google_password": "${GOOGLE_TEST_PASSWORD}"
+    "google_password": "${GOOGLE_TEST_PASSWORD}",
+    "github_username": "${GITHUB_TEST_USERNAME}",
+    "github_password": "${GITHUB_TEST_PASSWORD}"
   },
   "elements": [
     {
@@ -256,6 +258,39 @@
           "button"
         ],
         "last_verified_at": "2026-02-28T18:00:00+03:00"
+      }
+    },
+    {
+      "key": "github_login_button",
+      "intended_role": "oauth_button",
+      "selector_type": "css",
+      "selector": "#githubLogin",
+      "fallback_selectors": [
+        "button.btn-github",
+        "//button[contains(normalize-space(.), 'Continue with GitHub')]"
+      ],
+      "historical_metadata": {
+        "tag": "button",
+        "parent_tag": "div",
+        "text": "Continue with GitHub",
+        "attributes": {
+          "class": "btn-social btn-github"
+        },
+        "location": {
+          "x": 320,
+          "y": 664
+        },
+        "size": {
+          "width": 320,
+          "height": 44
+        },
+        "color": "rgb(255, 255, 255)",
+        "background_color": "rgb(36, 41, 47)",
+        "neighbor_signature": [
+          "div",
+          "button"
+        ],
+        "last_verified_at": "2026-03-05T00:00:00+03:00"
       }
     }
   ],

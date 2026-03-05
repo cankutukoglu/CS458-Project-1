@@ -52,6 +52,8 @@ class CredentialSet(BaseModel):
     password: str
     google_username: str = ""
     google_password: str = ""
+    github_username: str = ""
+    github_password: str = ""
 
 
 class ElementDefinition(BaseModel):

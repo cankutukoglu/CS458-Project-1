@@ -12,13 +12,15 @@ from urllib import error, request
 import pytest
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
 
 from framework.core.actions import SafeActions
 from framework.core.browser import BrowserSession
 from framework.core.dom_monitor import DomMonitor
 from framework.core.finder import SafeFinder
 from framework.core.healer import Healer
-from framework.llm.client import create_selector_repair_client
+from framework.llm.client import create_selector_repair_client, _post_json
 from framework.logging.artifacts import ArtifactManager
 from framework.logging.audit import HealingAuditLogger
 
@@ -75,10 +77,15 @@ def require_llm_credentials() -> None:
 
 
 def require_social_credentials(suite_config, provider: str) -> tuple[str, str]:
-    if provider != "google":
+    if provider == "google":
+        username = suite_config.credentials.google_username
+        password = suite_config.credentials.google_password
+    elif provider == "github":
+        username = suite_config.credentials.github_username
+        password = suite_config.credentials.github_password
+    else:
         pytest.skip(f"Unsupported social provider: {provider}")
-    username = suite_config.credentials.google_username
-    password = suite_config.credentials.google_password
+        return "", ""  # unreachable; satisfies type checkers
     if not username or not password:
         pytest.skip(f"Missing {provider} test credentials in config/test_suite.json")
     return username, password
@@ -120,6 +127,7 @@ def managed_runtime(suite_config, browser_name: str) -> Iterator[FrameworkRuntim
     try:
         yield runtime
     finally:
+        time.sleep(1)
         driver.quit()
 
 
@@ -263,12 +271,329 @@ def capture_auth_token(runtime: FrameworkRuntime) -> dict[str, str]:
     return token_data
 
 
-def complete_social_provider_login(runtime: FrameworkRuntime, provider: str, username: str, password: str) -> None:
+_OAUTH_NAV_SYSTEM_PROMPT = """\
+You are an automated browser agent navigating an OAuth login flow (Google or GitHub).
+Your GOAL is to successfully authenticate the user and authorize the application.
+
+You will receive:
+- "provider": the OAuth provider ("google" or "github")
+- "goal": what you are trying to accomplish on this page
+- "url": the current page URL
+- "credentials": {"username": "...", "password": "..."} — the test account to log in with
+- "interactive_elements": a list of interactive elements on the page with their selector, tag, text, and attributes
+
+You must respond with EXACTLY one JSON object (no markdown, no explanation) with these keys:
+- "action": one of "type", "click", "wait", or "give_up"
+- "index": the numeric index of the target element from the interactive_elements list
+- "value": the text to type (only for "type" action, empty string otherwise)
+- "reasoning": a short explanation of why this action progresses the login/authorization
+
+IMPORTANT: Use the "index" field to identify elements. Do NOT guess CSS selectors —
+multiple elements may share the same classes. The index is the only reliable identifier.
+
+RULES:
+1. NEVER click buttons that decline, deny, cancel, or refuse authorization.
+2. ALWAYS click buttons that accept, allow, authorize, continue, next, or confirm.
+3. For email/username fields, type the username from credentials.
+4. For password fields, type the password from credentials.
+5. If the page shows a consent/authorize prompt, click the APPROVE/AUTHORIZE button.
+6. If no useful action is available, respond with action "wait".
+7. If you are certain the login has permanently failed (e.g. wrong credentials, account locked,
+   captcha you cannot solve, or an unrecoverable error page), respond with action "give_up"
+   and explain in "reasoning".
+8. Use the element "index" to identify which element to interact with.\
+
+"""
+
+_COLLECT_INTERACTIVE_ELEMENTS_SCRIPT = r"""
+const items = [];
+const elements = document.querySelectorAll(
+  'input, button, a, select, textarea, [role="button"], [role="link"], [type="submit"]'
+);
+let idx = 0;
+for (const node of elements) {
+  const rect = node.getBoundingClientRect();
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || rect.width === 0) continue;
+  node.setAttribute('data-oauth-idx', String(idx));
+  items.push({
+    index: idx,
+    tag: node.tagName.toLowerCase(),
+    type: node.getAttribute('type') || '',
+    text: (node.innerText || node.textContent || '').trim().slice(0, 120),
+    attributes: {
+      id: node.id || '',
+      name: node.getAttribute('name') || '',
+      class: (node.className || '').toString().slice(0, 120),
+      href: node.getAttribute('href') || '',
+      value: node.getAttribute('value') || '',
+      placeholder: node.getAttribute('placeholder') || '',
+      aria_label: node.getAttribute('aria-label') || '',
+    },
+  });
+  idx++;
+}
+return items.slice(0, 50);
+"""
+
+
+def _build_llm_oauth_request(provider, page_url, username, password, elements):
+    """Build the LLM API request body for OAuth page navigation."""
+    user_payload = json.dumps({
+        "provider": provider,
+        "goal": f"Log in to {provider} with the provided credentials and authorize the application.",
+        "url": page_url,
+        "credentials": {"username": username, "password": password},
+        "interactive_elements": elements,
+    }, indent=2)
+
+    # Reuse the same LLM provider configuration as the healing pipeline
+    llm_provider = os.getenv("LLM_PROVIDER", "openai").lower()
+
+    if llm_provider in ("azure_openai", "azure"):
+        api_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+        endpoint = os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
+        deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT", "")
+        api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+        url_endpoint = f"{endpoint}/openai/deployments/{deployment}/chat/completions?api-version={api_version}"
+        headers = {"api-key": api_key, "Content-Type": "application/json"}
+        body = {
+            "messages": [
+                {"role": "system", "content": _OAUTH_NAV_SYSTEM_PROMPT},
+                {"role": "user", "content": user_payload},
+            ],
+        }
+        return url_endpoint, body, headers
+    elif llm_provider == "openai":
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        url_endpoint = "https://api.openai.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        body = {
+            "model": model, "temperature": 0,
+            "messages": [
+                {"role": "system", "content": _OAUTH_NAV_SYSTEM_PROMPT},
+                {"role": "user", "content": user_payload},
+            ],
+        }
+        return url_endpoint, body, headers
+    elif llm_provider == "anthropic":
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
+        url_endpoint = "https://api.anthropic.com/v1/messages"
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"}
+        body = {
+            "model": model, "max_tokens": 256, "temperature": 0,
+            "system": _OAUTH_NAV_SYSTEM_PROMPT,
+            "messages": [{"role": "user", "content": user_payload}],
+        }
+        return url_endpoint, body, headers
+    elif llm_provider == "gemini":
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        url_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+        body = {
+            "system_instruction": {"parts": [{"text": _OAUTH_NAV_SYSTEM_PROMPT}]},
+            "contents": [{"role": "user", "parts": [{"text": user_payload}]}],
+            "generationConfig": {"temperature": 0},
+        }
+        return url_endpoint, body, headers
+    else:
+        raise RuntimeError(f"Unsupported LLM_PROVIDER for OAuth navigation: {llm_provider}")
+
+
+def _parse_llm_response(raw_response: dict) -> dict:
+    """Extract the action JSON from any supported LLM provider response format."""
+    # OpenAI / Azure OpenAI
+    if "choices" in raw_response:
+        text = raw_response["choices"][0]["message"]["content"]
+    # Anthropic
+    elif "content" in raw_response and isinstance(raw_response["content"], list):
+        text = raw_response["content"][0]["text"]
+    # Gemini
+    elif "candidates" in raw_response:
+        parts = raw_response["candidates"][0].get("content", {}).get("parts", [])
+        text = "".join(p.get("text", "") for p in parts).strip()
+    else:
+        return {"action": "wait", "selector": "", "value": "", "reasoning": "Unparseable LLM response"}
+
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        text = text.rsplit("```", 1)[0].strip()
+    return json.loads(text)
+
+
+def _llm_pick_action(driver, provider: str, username: str, password: str) -> dict:
+    """Ask the LLM what to do on the current OAuth page."""
+    elements = driver.execute_script(_COLLECT_INTERACTIVE_ELEMENTS_SCRIPT) or []
+    print(f"  [OAuth AI] URL: {driver.current_url}")
+    print(f"  [OAuth AI] Found {len(elements)} interactive elements")
+    for el in elements:
+        print(f"    [{el.get('index')}] <{el.get('tag')}> text={el.get('text')!r}")
+    url_endpoint, body, headers = _build_llm_oauth_request(
+        provider, driver.current_url, username, password, elements
+    )
+    raw = _post_json(url_endpoint, body, headers)
+    action = _parse_llm_response(raw)
+    print(f"  [OAuth AI] LLM decided: {action.get('action')} on index={action.get('index')} — {action.get('reasoning', '')}")
+    return action
+
+
+def _execute_action(driver, action: dict) -> bool:
+    """Execute an LLM-chosen action using data-oauth-idx for precise targeting."""
+    act = action.get("action", "wait")
+    idx = action.get("index")
+    value = action.get("value", "")
+
+    if act == "wait" or idx is None:
+        return False
+
+    # Find by the data-oauth-idx attribute we stamped during collection
+    selector = f'[data-oauth-idx="{idx}"]'
+    try:
+        if act == "type":
+            el = WebDriverWait(driver, 5).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, selector))
+            )
+            el.clear()
+            el.send_keys(value)
+            print(f"  [OAuth AI] Typed into element index={idx}")
+            return True
+        elif act == "click":
+            el = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+            )
+            el.click()
+            print(f"  [OAuth AI] Clicked element index={idx}")
+            return True
+    except Exception as exc:
+        print(f"  [OAuth AI] data-oauth-idx={idx} lookup failed: {exc}")
+
+    return False
+
+
+def _is_back_at_app(url: str) -> bool:
+    """Check if the browser's *host* indicates we've returned to our app.
+
+    We parse only the hostname so that OAuth redirect_uri query params
+    (which contain 'localhost') don't cause a false positive.
+    """
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    return host in ("localhost", "127.0.0.1")
+
+
+def _google_credential_entry(driver, username: str, password: str) -> None:
+    """Walk through Google's known login pages with explicit waits."""
+    wait = WebDriverWait(driver, 15)
+    # Email page
+    try:
+        email_field = wait.until(EC.visibility_of_element_located((By.ID, "identifierId")))
+        email_field.clear()
+        email_field.send_keys(username)
+        print(f"  [OAuth] Typed email into #identifierId")
+        wait.until(EC.element_to_be_clickable((By.ID, "identifierNext"))).click()
+        print(f"  [OAuth] Clicked #identifierNext")
+        time.sleep(3)
+    except Exception as exc:
+        print(f"  [OAuth] Google email step failed: {exc}")
+        return
+    # Password page
+    try:
+        pw_field = wait.until(EC.visibility_of_element_located((By.NAME, "Passwd")))
+        pw_field.clear()
+        pw_field.send_keys(password)
+        print(f"  [OAuth] Typed password into Passwd field")
+        wait.until(EC.element_to_be_clickable((By.ID, "passwordNext"))).click()
+        print(f"  [OAuth] Clicked #passwordNext")
+        time.sleep(3)
+    except Exception as exc:
+        print(f"  [OAuth] Google password step failed: {exc}")
+
+
+def _github_credential_entry(driver, username: str, password: str) -> None:
+    """Walk through GitHub's known login page with explicit waits."""
+    wait = WebDriverWait(driver, 15)
+    try:
+        login_field = wait.until(EC.visibility_of_element_located((By.ID, "login_field")))
+        login_field.clear()
+        login_field.send_keys(username)
+        print(f"  [OAuth] Typed username into #login_field")
+        pw_field = driver.find_element(By.ID, "password")
+        pw_field.clear()
+        pw_field.send_keys(password)
+        print(f"  [OAuth] Typed password into #password")
+        wait.until(EC.element_to_be_clickable((By.NAME, "commit"))).click()
+        print(f"  [OAuth] Clicked Sign In (commit)")
+        time.sleep(3)
+    except Exception as exc:
+        print(f"  [OAuth] GitHub credential entry failed: {exc}")
+
+
+def complete_social_provider_login(runtime: FrameworkRuntime, provider: str, username: str, password: str, timeout: float = 60) -> None:
+    """Navigate through OAuth provider pages: credentials first, then LLM for any remaining pages.
+
+    Phase 1: Enter credentials using known selectors (reliable, no LLM needed).
+    Phase 2: Use the configured LLM to decide what to click on any
+             intermediate pages (consent, device trust, 2FA, etc.)
+             until the browser returns to our app or the LLM gives up.
+
+    There is no hard timeout — the loop continues until the browser
+    redirects back or the LLM explicitly signals failure.
+    """
+    driver = runtime.driver
+    MAX_ITERATIONS = 50  # safety net against truly infinite loops
+
+    # Phase 1 — enter credentials using known, reliable selectors
+    print(f"  [OAuth] Phase 1: entering {provider} credentials...")
     if provider == "google":
-        _send_keys_if_present(runtime, By.ID, "identifierId", username)
-        _click_if_present(runtime, By.ID, "identifierNext")
-        _send_keys_if_present(runtime, By.NAME, "Passwd", password)
-        _click_if_present(runtime, By.ID, "passwordNext")
+        _google_credential_entry(driver, username, password)
+    elif provider == "github":
+        _github_credential_entry(driver, username, password)
+
+    # Phase 2 — LLM-driven navigation for any remaining pages
+    consecutive_waits = 0
+    iteration = 0
+
+    while iteration < MAX_ITERATIONS:
+        iteration += 1
+        current = driver.current_url
+        if _is_back_at_app(current):
+            print(f"  [OAuth] Back at app: {current}")
+            return
+
+        print(f"  [OAuth] Phase 2 (iter {iteration}): still on external page — asking LLM for guidance...")
+        try:
+            action = _llm_pick_action(driver, provider, username, password)
+        except Exception as exc:
+            print(f"  [OAuth AI] LLM call failed: {exc}")
+            time.sleep(3)
+            continue
+
+        act = action.get("action", "wait")
+
+        if act == "give_up":
+            reason = action.get("reasoning", "LLM decided the login cannot succeed")
+            print(f"  [OAuth AI] Giving up: {reason}")
+            return
+
+        if act == "wait":
+            consecutive_waits += 1
+            if consecutive_waits >= 5:
+                print(f"  [OAuth AI] LLM said 'wait' {consecutive_waits} times — giving up")
+                return
+            time.sleep(2)
+            continue
+
+        consecutive_waits = 0
+        executed = _execute_action(driver, action)
+        if not executed:
+            print(f"  [OAuth AI] Could not execute action: {action}")
+        time.sleep(2)
+
+    print(f"  [OAuth] Reached max iterations ({MAX_ITERATIONS}) — current URL: {driver.current_url}")
 
 
 def repeat_failed_login(runtime: FrameworkRuntime, suite_config, attempts: int) -> list[dict[str, str]]:
