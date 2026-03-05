@@ -167,16 +167,6 @@ body {
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
 }
 
-.btn-facebook {
-    background-color: #1877f2;
-    color: #fff;
-    border: 1px solid #1877f2;
-}
-
-.btn-facebook:hover {
-    background-color: #166fe5;
-}
-
 .btn-social svg {
     width: 20px;
     height: 20px;

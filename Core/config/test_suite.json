@@ -11,9 +11,7 @@
     "phone": "+1 (555) 000-0000",
     "password": "ChangeMe123!",
     "google_username": "${GOOGLE_TEST_USERNAME}",
-    "google_password": "${GOOGLE_TEST_PASSWORD}",
-    "facebook_username": "${FACEBOOK_TEST_USERNAME}",
-    "facebook_password": "${FACEBOOK_TEST_PASSWORD}"
+    "google_password": "${GOOGLE_TEST_PASSWORD}"
   },
   "elements": [
     {
@@ -185,39 +183,6 @@
         },
         "color": "rgb(33, 37, 41)",
         "background_color": "rgb(255, 255, 255)",
-        "neighbor_signature": [
-          "div",
-          "button"
-        ],
-        "last_verified_at": "2026-02-28T18:00:00+03:00"
-      }
-    },
-    {
-      "key": "facebook_login_button",
-      "intended_role": "oauth_button",
-      "selector_type": "css",
-      "selector": "#facebookLogin",
-      "fallback_selectors": [
-        "button.btn-facebook",
-        "//button[contains(normalize-space(.), 'Continue with Facebook')]"
-      ],
-      "historical_metadata": {
-        "tag": "button",
-        "parent_tag": "div",
-        "text": "Continue with Facebook",
-        "attributes": {
-          "class": "btn-social btn-facebook"
-        },
-        "location": {
-          "x": 320,
-          "y": 670
-        },
-        "size": {
-          "width": 320,
-          "height": 44
-        },
-        "color": "rgb(255, 255, 255)",
-        "background_color": "rgb(24, 119, 242)",
         "neighbor_signature": [
           "div",
           "button"

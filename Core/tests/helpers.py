@@ -68,12 +68,10 @@ def require_llm_credentials() -> None:
 
 
 def require_social_credentials(suite_config, provider: str) -> tuple[str, str]:
-    if provider == "google":
-        username = suite_config.credentials.google_username
-        password = suite_config.credentials.google_password
-    else:
-        username = suite_config.credentials.facebook_username
-        password = suite_config.credentials.facebook_password
+    if provider != "google":
+        pytest.skip(f"Unsupported social provider: {provider}")
+    username = suite_config.credentials.google_username
+    password = suite_config.credentials.google_password
     if not username or not password:
         pytest.skip(f"Missing {provider} test credentials in config/test_suite.json")
     return username, password
@@ -265,10 +263,6 @@ def complete_social_provider_login(runtime: FrameworkRuntime, provider: str, use
         _click_if_present(runtime, By.ID, "identifierNext")
         _send_keys_if_present(runtime, By.NAME, "Passwd", password)
         _click_if_present(runtime, By.ID, "passwordNext")
-    else:
-        _send_keys_if_present(runtime, By.ID, "email", username)
-        _send_keys_if_present(runtime, By.ID, "pass", password)
-        _click_if_present(runtime, By.NAME, "login")
 
 
 def repeat_failed_login(runtime: FrameworkRuntime, suite_config, attempts: int) -> list[dict[str, str]]:
