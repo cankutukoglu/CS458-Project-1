@@ -35,12 +35,6 @@ class ArtifactManager:
         stamp = timestamp or self.timestamp()
         return self.screenshot_root / f"{stamp}_{element_key}.png"
 
-    def write_run_log(self, message: str, timestamp: str | None = None) -> Path:
-        stamp = timestamp or self.timestamp()
-        path = self.run_log_root / f"{stamp}.log"
-        path.write_text(message, encoding="utf-8")
-        return path
-
     def reset(self) -> Path:
         self._ensure_structure()
         for child in self.root.iterdir():
