@@ -86,10 +86,14 @@ RISK_MEDIUM = 40
 RISK_HIGH = 60
 RISK_CRITICAL = 90
 
-FAILED_ATTEMPTS_LOCK = 10
-FAILED_ATTEMPTS_CHALLENGE = 5
 VELOCITY_WINDOW_SECONDS = 300
 VELOCITY_MAX_ATTEMPTS = 8
+LOCK_DURATION_SECONDS = 15  # First offence: temporary lock; second offence: permanent suspension
+
+# Each wrong password adds this many points to the risk score.
+# The score thresholds (RISK_HIGH=60, RISK_CRITICAL=90) then determine
+# whether the account transitions to challenged or locked — not the raw count.
+SCORE_PER_FAILED_ATTEMPT = 12
 
 
 
@@ -104,6 +108,7 @@ class User(db.Model):
     failed_attempts = db.Column(db.Integer, default=0, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     locked_until = db.Column(db.DateTime, nullable=True)
+    lock_count = db.Column(db.Integer, default=0, nullable=False)
 
     login_logs = db.relationship("LoginLog", backref="user", lazy="dynamic")
 
@@ -216,6 +221,49 @@ def deny_login_for_status(user, email, ip_address, user_agent, account_status, e
     }), 403
 
 
+def maybe_unlock_account(user) -> bool:
+    """Auto-unlock a temporarily locked account if the lock duration has expired.
+
+    Returns True if the account was unlocked so the caller can continue the
+    login flow normally; False if the lock is still active.
+    """
+    if user.account_status != ACCOUNT_LOCKED or not user.locked_until:
+        return False
+    locked_until = user.locked_until
+    if locked_until.tzinfo is None:
+        locked_until = locked_until.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) >= locked_until:
+        user.account_status = ACCOUNT_ACTIVE
+        user.failed_attempts = 0
+        user.locked_until = None
+        db.session.commit()
+        log.info("Account auto-unlocked after lock expiry: %s", user.email)
+        return True
+    return False
+
+
+def lock_or_suspend_user(user) -> str:
+    """Lock the account temporarily on first offence; suspend permanently on second.
+
+    First lock  → account_status = ACCOUNT_LOCKED, locked_until = now + LOCK_DURATION_SECONDS,
+                  lock_count incremented to 1.
+    Second lock → account_status = ACCOUNT_SUSPENDED, locked_until cleared (permanent).
+
+    Returns the new account_status string ("locked" or "suspended").
+    """
+    if user.lock_count >= 1:
+        user.account_status = ACCOUNT_SUSPENDED
+        user.locked_until = None
+        log.info("Account suspended after second lockout: %s", user.email)
+        return ACCOUNT_SUSPENDED
+    user.account_status = ACCOUNT_LOCKED
+    user.locked_until = datetime.now(timezone.utc) + timedelta(seconds=LOCK_DURATION_SECONDS)
+    user.lock_count += 1
+    log.info("Account locked until %s (lock #%d): %s",
+             user.locked_until.isoformat(), user.lock_count, user.email)
+    return ACCOUNT_LOCKED
+
+
 def find_or_create_oauth_user(email, provider, provider_id=None):
     email = (email or "").strip().lower()
     user = User.query.filter_by(email=email).first()
@@ -249,6 +297,95 @@ def finalize_oauth_login(user, email, ip_address, user_agent, action_taken):
     session["email"] = email
 
 
+def _finalize_oauth_with_risk(user, email, ip_address, user_agent, provider):
+    # ── 1. Suspended: permanent deny ─────────────────────────────────────
+    if user.account_status == ACCOUNT_SUSPENDED:
+        create_login_log(
+            user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+            success=False, risk_score=100, risk_factors=["SUSPENDED_ACCOUNT"],
+            action_taken="denied",
+        )
+        db.session.commit()
+        log.warning("OAuth login denied — suspended account: %s", email)
+        return redirect("/index.html?error=Account+suspended.+Please+contact+support.")
+
+    # ── 2. Locked: try auto-unlock, deny if still locked ─────────────────
+    if user.account_status == ACCOUNT_LOCKED:
+        if not maybe_unlock_account(user):
+            risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
+            remaining_secs = 0
+            if user.locked_until:
+                lu = user.locked_until
+                if lu.tzinfo is None:
+                    lu = lu.replace(tzinfo=timezone.utc)
+                remaining_secs = max(0, int((lu - datetime.now(timezone.utc)).total_seconds()))
+            create_login_log(
+                user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+                success=False, risk_score=risk_score, risk_factors=risk_factors,
+                action_taken="denied",
+            )
+            db.session.commit()
+            log.warning(
+                "OAuth login denied — account still locked (%ds remaining): %s",
+                remaining_secs, email,
+            )
+            return redirect(
+                f"/index.html?error=Account+locked.+Auto-unlocks+in+{remaining_secs}+second(s)."
+            )
+
+    # ── 3. Compute risk score ─────────────────────────────────────────────
+    risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
+
+    # ── 4. LLM fraud analysis ─────────────────────────────────────────────
+    fraud_analysis = (
+        llm_fraud_analysis(email, ip_address, user_agent, risk_score, risk_factors)
+        if risk_score >= RISK_HIGH
+        else None
+    )
+
+    # ── 5. Apply risk action ──────────────────────────────────────────────
+    action = apply_risk_action(user, risk_score, fraud_analysis)
+
+    if action in (ACCOUNT_LOCKED, ACCOUNT_SUSPENDED):
+        create_login_log(
+            user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+            success=False, risk_score=risk_score, risk_factors=risk_factors,
+            fraud_analysis=fraud_analysis, action_taken=action,
+        )
+        db.session.commit()
+        log.warning(
+            "OAuth login denied via risk action '%s' (score=%d): %s",
+            action, risk_score, email,
+        )
+        if action == ACCOUNT_SUSPENDED:
+            return redirect(
+                "/index.html?error=Account+suspended+due+to+suspicious+activity."
+            )
+        return redirect("/index.html?error=Account+locked+due+to+suspicious+activity.")
+
+    # ── 6. Grant session ──────────────────────────────────────────────────
+    # If the account was CHALLENGED (flagged from prior failed password
+    # attempts), a successful OAuth verification proves legitimate ownership
+    # — reset it back to ACTIVE.
+    if user.account_status == ACCOUNT_CHALLENGED:
+        user.account_status = ACCOUNT_ACTIVE
+        user.failed_attempts = 0
+        log.info("Account reset CHALLENGED → ACTIVE via OAuth (%s): %s", provider, email)
+
+    create_login_log(
+        user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+        success=True, risk_score=risk_score, risk_factors=risk_factors,
+        fraud_analysis=fraud_analysis, action_taken=f"oauth_{provider}",
+    )
+    db.session.commit()
+    session["user_id"] = user.id
+    session["email"] = email
+    log.info(
+        "OAuth login granted (provider=%s, score=%d): %s", provider, risk_score, email
+    )
+    return redirect("/index.html?login_success=true")
+
+
 def simulate_fraud_analysis(prompt_context):
     recommendation = "allow_with_monitoring"
     verdict = "LOW_RISK"
@@ -279,16 +416,15 @@ def compute_risk_score(user, email, ip_address, user_agent):
     score = 0
     factors = []
 
-    if user:
-        if user.failed_attempts >= FAILED_ATTEMPTS_LOCK:
-            score += 50
-            factors.append(f"CRITICAL: {user.failed_attempts} consecutive failed attempts (>= {FAILED_ATTEMPTS_LOCK})")
-        elif user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:
-            score += 30
-            factors.append(f"HIGH: {user.failed_attempts} consecutive failed attempts (>= {FAILED_ATTEMPTS_CHALLENGE})")
-        elif user.failed_attempts >= 3:
-            score += 15
-            factors.append(f"MEDIUM: {user.failed_attempts} consecutive failed attempts")
+    if user and user.failed_attempts > 0:
+        # Each wrong password contributes incrementally to the risk score.
+        # The score thresholds (RISK_HIGH / RISK_CRITICAL) decide the state —
+        # the raw attempt count is just an input, not a direct state trigger.
+        attempt_score = min(user.failed_attempts * SCORE_PER_FAILED_ATTEMPT, RISK_CRITICAL)
+        score += attempt_score
+        factors.append(
+            f"FAILED_ATTEMPTS: {user.failed_attempts} consecutive failed attempt(s) (+{attempt_score})"
+        )
 
     if user:
         known_ip = LoginLog.query.filter_by(
@@ -454,11 +590,11 @@ def apply_risk_action(user, risk_score, fraud_result):
 
     recommendation = fraud_result.get("recommendation", "") if fraud_result else ""
 
-    # Critical: lock the account
+    # Critical: lock the account (or suspend on second offence)
     if risk_score >= RISK_CRITICAL or recommendation == "lock_account":
-        user.account_status = ACCOUNT_LOCKED
+        new_status = lock_or_suspend_user(user)
         db.session.commit()
-        return "locked"
+        return new_status  # ACCOUNT_LOCKED or ACCOUNT_SUSPENDED
 
     # High risk: challenge the user
     if risk_score >= RISK_HIGH or recommendation == "challenge_user":
@@ -482,6 +618,65 @@ def recaptcha_config():
         "site_key": RECAPTCHA_SITE_KEY if is_recaptcha_enabled() else "",
         "mode": "challenged_login_only",
     }), 200
+
+
+def _failed_login_response(user, action, risk_score, risk_factors, fraud_analysis, recaptcha_error=None):
+    """Build the HTTP response for any failed login path.
+
+    action is the string returned by apply_risk_action():
+      ACCOUNT_LOCKED / ACCOUNT_SUSPENDED → 403
+      "challenged" / "denied"            → 401
+    recaptcha_error is set only when the failure was a reCAPTCHA rejection.
+    """
+    base = {
+        "risk_score": risk_score,
+        **({"risk_factors": risk_factors} if risk_factors else {}),
+        **({"fraud_analysis": fraud_analysis} if fraud_analysis else {}),
+    }
+
+    if action == ACCOUNT_SUSPENDED:
+        return jsonify({
+            **base,
+            "error": "Account suspended due to repeated suspicious activity. Please contact support.",
+            "account_status": ACCOUNT_SUSPENDED,
+        }), 403
+
+    if action == ACCOUNT_LOCKED:
+        return jsonify({
+            **base,
+            "error": (
+                f"Account locked due to suspicious activity. "
+                f"It will auto-unlock in {LOCK_DURATION_SECONDS // 60} minute(s)."
+            ),
+            "account_status": ACCOUNT_LOCKED,
+            "locked_until": user.locked_until.isoformat() if user and user.locked_until else None,
+        }), 403
+
+    # "challenged" or "denied" — 401
+    response = {
+        **base,
+        "error": recaptcha_error or "Invalid credentials",
+    }
+    if recaptcha_error:
+        response["code"] = "recaptcha_failed"
+        response["challenge_required"] = True
+        response["account_status"] = ACCOUNT_CHALLENGED
+    elif user and user.account_status == ACCOUNT_CHALLENGED:
+        response["account_status"] = ACCOUNT_CHALLENGED
+        response["challenge_required"] = bool(is_recaptcha_enabled())
+
+    if user and user.failed_attempts > 0:
+        current_score = min(user.failed_attempts * SCORE_PER_FAILED_ATTEMPT, RISK_CRITICAL)
+        if current_score >= RISK_HIGH:
+            pts_to_lock = max(0, RISK_CRITICAL - current_score)
+            attempts_to_lock = max(0, -(-pts_to_lock // SCORE_PER_FAILED_ATTEMPT))  # ceiling div
+            response.setdefault("account_status", user.account_status)
+            response["warning"] = (
+                f"Risk score is {current_score}/100. "
+                f"Account will be locked in ~{attempts_to_lock} more failed attempt(s)."
+            )
+
+    return jsonify(response), 401
 
 
 @app.route("/api/register", methods=["POST"])
@@ -554,76 +749,20 @@ def login():
         )
 
     if user and user.account_status == ACCOUNT_LOCKED:
-        return deny_login_for_status(
-            user,
-            email,
-            ip_address,
-            user_agent,
-            ACCOUNT_LOCKED,
-            "Account is locked due to suspicious activity. Please contact support.",
-        )
-
-    risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
-
-    if user and user.account_status == ACCOUNT_CHALLENGED and is_recaptcha_enabled():
-        recaptcha_token = (data.get("recaptcha_token") or "").strip()
-        recaptcha_ok, recaptcha_error = verify_recaptcha_token(recaptcha_token, ip_address)
-        if not recaptcha_ok:
-            user.failed_attempts += 1
-            action = "denied"
-            if user.failed_attempts >= FAILED_ATTEMPTS_LOCK:
-                user.account_status = ACCOUNT_LOCKED
-                action = "locked"
-            elif user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:
-                if user.account_status == ACCOUNT_ACTIVE:
-                    user.account_status = ACCOUNT_CHALLENGED
-                action = "challenged"
-
-            recaptcha_risk_factors = list(risk_factors)
-            recaptcha_risk_factors.append("RECAPTCHA_FAILED: Required challenge not completed or invalid")
-
-            create_login_log(
-                user=user,
-                email=email,
-                ip_address=ip_address,
-                user_agent=user_agent,
-                success=False,
-                risk_score=risk_score,
-                risk_factors=recaptcha_risk_factors,
-                fraud_analysis=None,
-                action_taken=action,
-            )
-            db.session.commit()
-
-            if user.account_status == ACCOUNT_LOCKED:
-                return jsonify({
-                    "error": "Account locked due to suspicious activity.",
-                    "account_status": ACCOUNT_LOCKED,
-                    "risk_score": risk_score,
-                    "risk_factors": recaptcha_risk_factors,
-                }), 403
-
-            remaining = max(0, FAILED_ATTEMPTS_LOCK - user.failed_attempts)
-            return jsonify({
-                "error": recaptcha_error,
-                "code": "recaptcha_failed",
-                "challenge_required": True,
-                "account_status": ACCOUNT_CHALLENGED,
-                "warning": f"Account will be locked after {remaining} more failed attempts",
-                "risk_score": risk_score,
-                "risk_factors": recaptcha_risk_factors,
-            }), 403
-
-    fraud_analysis = None
-    if risk_score >= RISK_HIGH:
-        fraud_analysis = llm_fraud_analysis(
-            email, ip_address, user_agent, risk_score, risk_factors
-        )
-
-    action = "allowed"
-    if risk_score >= RISK_HIGH and user:
-        action = apply_risk_action(user, risk_score, fraud_analysis)
-        if action == "locked":
+        if maybe_unlock_account(user):
+            log.info("Temporary lock expired — continuing login for %s", email)
+        else:
+            # Lock still active; calculate remaining seconds for the response
+            remaining_secs = 0
+            if user.locked_until:
+                lu = user.locked_until
+                if lu.tzinfo is None:
+                    lu = lu.replace(tzinfo=timezone.utc)
+                remaining_secs = max(0, int((lu - datetime.now(timezone.utc)).total_seconds()))
+            # Compute real risk factors so the response always reflects the full
+            # picture (includes FAILED_ATTEMPTS, velocity, etc.) rather than a
+            # hardcoded placeholder that strips out meaningful factor names.
+            risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
             create_login_log(
                 user=user,
                 email=email,
@@ -632,63 +771,91 @@ def login():
                 success=False,
                 risk_score=risk_score,
                 risk_factors=risk_factors,
-                fraud_analysis=fraud_analysis,
-                action_taken="locked",
+                action_taken="denied",
             )
             db.session.commit()
             return jsonify({
-                "error": "Account locked due to suspicious activity.",
+                "error": (
+                    f"Account is locked due to suspicious activity. "
+                    f"It will auto-unlock in {remaining_secs} second(s). "
+                    f"Contact support if you need immediate access."
+                ),
                 "account_status": ACCOUNT_LOCKED,
+                "locked_until": user.locked_until.isoformat() if user.locked_until else None,
                 "risk_score": risk_score,
                 "risk_factors": risk_factors,
-                "fraud_analysis": fraud_analysis,
             }), 403
 
+    # ------------------------------------------------------------------ #
+    #  Step 1 — reCAPTCHA gate (challenged accounts + recaptcha enabled) #
+    # ------------------------------------------------------------------ #
+    if user and user.account_status == ACCOUNT_CHALLENGED and is_recaptcha_enabled():
+        recaptcha_token = (data.get("recaptcha_token") or "").strip()
+        recaptcha_ok, recaptcha_error = verify_recaptcha_token(recaptcha_token, ip_address)
+        if not recaptcha_ok:
+            user.failed_attempts += 1
+            risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
+            risk_factors = list(risk_factors) + [
+                "RECAPTCHA_FAILED: Required challenge not completed or invalid"
+            ]
+            fraud_analysis = (
+                llm_fraud_analysis(email, ip_address, user_agent, risk_score, risk_factors)
+                if risk_score >= RISK_HIGH else None
+            )
+            action = apply_risk_action(user, risk_score, fraud_analysis)
+            create_login_log(
+                user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+                success=False, risk_score=risk_score, risk_factors=risk_factors,
+                fraud_analysis=fraud_analysis, action_taken=action,
+            )
+            db.session.commit()
+            return _failed_login_response(
+                user, action, risk_score, risk_factors, fraud_analysis,
+                recaptcha_error=recaptcha_error,
+            )
+
+    # ------------------------------------------------------------------ #
+    #  Step 2 — Password check                                            #
+    #  Increment failed_attempts FIRST so compute_risk_score sees the     #
+    #  up-to-date count (as the PDF requires: "10th failed attempt"       #
+    #  must be reflected in the risk score that triggers the LLM).        #
+    # ------------------------------------------------------------------ #
     if not user or not check_password_hash(user.password_hash, password):
         if user:
             user.failed_attempts += 1
-            if user.failed_attempts >= FAILED_ATTEMPTS_LOCK:
-                user.account_status = ACCOUNT_LOCKED
-                action = "locked"
-            elif user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:
-                if user.account_status == ACCOUNT_ACTIVE:
-                    user.account_status = ACCOUNT_CHALLENGED
-                action = "challenged"
-            else:
-                action = "denied"
-
+        risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
+        # LLM only fires after reCAPTCHA has been generated (shown) at least once.
+        # That requires two conditions:
+        #   1. reCAPTCHA is enabled — so it was actually presented to the user.
+        #   2. account is CHALLENGED — meaning a prior high-risk attempt already
+        #      triggered the CAPTCHA challenge flow.
+        # Without both, we know reCAPTCHA was never generated, so the LLM stays silent.
+        fraud_analysis = (
+            llm_fraud_analysis(email, ip_address, user_agent, risk_score, risk_factors)
+            if risk_score >= RISK_HIGH
+            and user
+            and user.account_status == ACCOUNT_CHALLENGED
+            and is_recaptcha_enabled()
+            else None
+        )
+        action = apply_risk_action(user, risk_score, fraud_analysis) if user else "denied"
         create_login_log(
-            user=user,
-            email=email,
-            ip_address=ip_address,
-            user_agent=user_agent,
-            success=False,
-            risk_score=risk_score,
-            risk_factors=risk_factors,
-            fraud_analysis=fraud_analysis,
-            action_taken=action,
+            user=user, email=email, ip_address=ip_address, user_agent=user_agent,
+            success=False, risk_score=risk_score, risk_factors=risk_factors,
+            fraud_analysis=fraud_analysis, action_taken=action,
         )
         db.session.commit()
+        return _failed_login_response(user, action, risk_score, risk_factors, fraud_analysis)
 
-        remaining = max(0, FAILED_ATTEMPTS_LOCK - (user.failed_attempts if user else 0))
-        response = {
-            "error": "Invalid credentials",
-            "risk_score": risk_score,
-        }
-        if user and user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:
-            response["warning"] = f"Account will be locked after {remaining} more failed attempts"
-            response["account_status"] = user.account_status
-            response["challenge_required"] = bool(
-                is_recaptcha_enabled() and user.account_status == ACCOUNT_CHALLENGED
-            )
-        if risk_factors:
-            response["risk_factors"] = risk_factors
-        if fraud_analysis:
-            response["fraud_analysis"] = fraud_analysis
-
-        return jsonify(response), 401
+    # Compute risk score for the success log (reflects state before reset,
+    # e.g. a user with 3 prior failures still shows MEDIUM risk on success).
+    risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
+    fraud_analysis = None
+    action = "allowed"
 
     user.failed_attempts = 0
+    user.lock_count = 0
+    user.locked_until = None
     if user.account_status == ACCOUNT_CHALLENGED:
         user.account_status = ACCOUNT_ACTIVE
 
@@ -777,6 +944,8 @@ def update_user_status():
     user.account_status = new_status
     if new_status == ACCOUNT_ACTIVE:
         user.failed_attempts = 0
+        user.lock_count = 0
+        user.locked_until = None
     db.session.commit()
 
     return jsonify({
@@ -796,8 +965,7 @@ def risk_config():
             "high": RISK_HIGH,
             "critical": RISK_CRITICAL,
         },
-        "failed_attempts_to_challenge": FAILED_ATTEMPTS_CHALLENGE,
-        "failed_attempts_to_lock": FAILED_ATTEMPTS_LOCK,
+        "score_per_failed_attempt": SCORE_PER_FAILED_ATTEMPT,
         "velocity_window_seconds": VELOCITY_WINDOW_SECONDS,
         "velocity_max_attempts": VELOCITY_MAX_ATTEMPTS,
         "account_states": [ACCOUNT_ACTIVE, ACCOUNT_CHALLENGED, ACCOUNT_LOCKED, ACCOUNT_SUSPENDED],
@@ -829,9 +997,7 @@ def auth_google():
 
     email = email.strip().lower()
     user = find_or_create_oauth_user(email, "google", user_info.get("sub"))
-    finalize_oauth_login(user, email, ip_address, user_agent, "oauth_google")
-
-    return redirect("/index.html?login_success=true")
+    return _finalize_oauth_with_risk(user, email, ip_address, user_agent, "google")
 
 
 @app.route("/api/login/github")
@@ -876,8 +1042,7 @@ def auth_github():
 
     email = email.strip().lower()
     user = find_or_create_oauth_user(email, "github", str(user_info.get("id", "")))
-    finalize_oauth_login(user, email, ip_address, user_agent, "oauth_github")
-    return redirect("/index.html?login_success=true")
+    return _finalize_oauth_with_risk(user, email, ip_address, user_agent, "github")
 
 
 @app.route("/api/me")
