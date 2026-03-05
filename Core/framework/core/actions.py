@@ -4,6 +4,7 @@ from selenium.common.exceptions import (
     ElementClickInterceptedException,
     ElementNotInteractableException,
     StaleElementReferenceException,
+    TimeoutException,
 )
 
 
@@ -19,6 +20,10 @@ class SafeActions:
         element = self.finder.find(element_key)
         try:
             element.click()
+            return
+        except TimeoutException:
+            # The click triggered a navigation whose page-load exceeded the timeout.
+            # The redirect already happened, so treat this as success.
             return
         except ElementClickInterceptedException as exc:
             dismiss_selector = self.healer.recover(self.driver, element_key, exc, mode="obstacle_repair")
