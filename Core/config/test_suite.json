@@ -15,6 +15,74 @@
   },
   "elements": [
     {
+      "key": "toggle_email_login",
+      "intended_role": "button",
+      "selector_type": "css",
+      "selector": "#toggleEmail",
+      "fallback_selectors": [
+        "button[data-method='email']",
+        ".toggle-btn:first-child"
+      ],
+      "historical_metadata": {
+        "tag": "button",
+        "parent_tag": "div",
+        "text": "Email",
+        "attributes": {
+          "data-method": "email",
+          "class": "toggle-btn active"
+        },
+        "location": {
+          "x": 240,
+          "y": 220
+        },
+        "size": {
+          "width": 160,
+          "height": 40
+        },
+        "color": "rgb(255, 255, 255)",
+        "background_color": "rgb(79, 70, 229)",
+        "neighbor_signature": [
+          "div",
+          "button"
+        ],
+        "last_verified_at": "2026-03-05T00:00:00+03:00"
+      }
+    },
+    {
+      "key": "toggle_phone_login",
+      "intended_role": "button",
+      "selector_type": "css",
+      "selector": "#togglePhone",
+      "fallback_selectors": [
+        "button[data-method='phone']",
+        ".toggle-btn:last-child"
+      ],
+      "historical_metadata": {
+        "tag": "button",
+        "parent_tag": "div",
+        "text": "Phone",
+        "attributes": {
+          "data-method": "phone",
+          "class": "toggle-btn"
+        },
+        "location": {
+          "x": 400,
+          "y": 220
+        },
+        "size": {
+          "width": 160,
+          "height": 40
+        },
+        "color": "rgb(107, 114, 128)",
+        "background_color": "rgb(249, 250, 251)",
+        "neighbor_signature": [
+          "div",
+          "button"
+        ],
+        "last_verified_at": "2026-03-05T00:00:00+03:00"
+      }
+    },
+    {
       "key": "login_email_input",
       "intended_role": "input",
       "selector_type": "css",
