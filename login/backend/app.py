@@ -86,11 +86,14 @@ RISK_MEDIUM = 40
 RISK_HIGH = 60
 RISK_CRITICAL = 90
 
-FAILED_ATTEMPTS_LOCK = 10
-FAILED_ATTEMPTS_CHALLENGE = 5
 VELOCITY_WINDOW_SECONDS = 300
 VELOCITY_MAX_ATTEMPTS = 8
-LOCK_DURATION_SECONDS = 15  # First offence: temporary 2-minute lock; second offence: permanent suspension
+LOCK_DURATION_SECONDS = 15  # First offence: temporary lock; second offence: permanent suspension
+
+# Each wrong password adds this many points to the risk score.
+# The score thresholds (RISK_HIGH=60, RISK_CRITICAL=90) then determine
+# whether the account transitions to challenged or locked — not the raw count.
+SCORE_PER_FAILED_ATTEMPT = 12
 
 
 
@@ -324,16 +327,15 @@ def compute_risk_score(user, email, ip_address, user_agent):
     score = 0
     factors = []
 
-    if user:
-        if user.failed_attempts >= FAILED_ATTEMPTS_LOCK:
-            score += 90  # Alone reaches RISK_CRITICAL → LLM will recommend lock_account
-            factors.append(f"CRITICAL: {user.failed_attempts} consecutive failed attempts (>= {FAILED_ATTEMPTS_LOCK})")
-        elif user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:
-            score += 60  # Alone reaches RISK_HIGH → LLM will recommend challenge_user
-            factors.append(f"HIGH: {user.failed_attempts} consecutive failed attempts (>= {FAILED_ATTEMPTS_CHALLENGE})")
-        elif user.failed_attempts >= 3:
-            score += 15
-            factors.append(f"MEDIUM: {user.failed_attempts} consecutive failed attempts")
+    if user and user.failed_attempts > 0:
+        # Each wrong password contributes incrementally to the risk score.
+        # The score thresholds (RISK_HIGH / RISK_CRITICAL) decide the state —
+        # the raw attempt count is just an input, not a direct state trigger.
+        attempt_score = min(user.failed_attempts * SCORE_PER_FAILED_ATTEMPT, RISK_CRITICAL)
+        score += attempt_score
+        factors.append(
+            f"FAILED_ATTEMPTS: {user.failed_attempts} consecutive failed attempt(s) (+{attempt_score})"
+        )
 
     if user:
         known_ip = LoginLog.query.filter_by(
@@ -574,10 +576,16 @@ def _failed_login_response(user, action, risk_score, risk_factors, fraud_analysi
         response["account_status"] = ACCOUNT_CHALLENGED
         response["challenge_required"] = bool(is_recaptcha_enabled())
 
-    if user and user.failed_attempts >= FAILED_ATTEMPTS_CHALLENGE:
-        remaining = max(0, FAILED_ATTEMPTS_LOCK - user.failed_attempts)
-        response.setdefault("account_status", user.account_status)
-        response["warning"] = f"Account will be locked after {remaining} more failed attempts"
+    if user and user.failed_attempts > 0:
+        current_score = min(user.failed_attempts * SCORE_PER_FAILED_ATTEMPT, RISK_CRITICAL)
+        if current_score >= RISK_HIGH:
+            pts_to_lock = max(0, RISK_CRITICAL - current_score)
+            attempts_to_lock = max(0, -(-pts_to_lock // SCORE_PER_FAILED_ATTEMPT))  # ceiling div
+            response.setdefault("account_status", user.account_status)
+            response["warning"] = (
+                f"Risk score is {current_score}/100. "
+                f"Account will be locked in ~{attempts_to_lock} more failed attempt(s)."
+            )
 
     return jsonify(response), 401
 
@@ -662,14 +670,18 @@ def login():
                 if lu.tzinfo is None:
                     lu = lu.replace(tzinfo=timezone.utc)
                 remaining_secs = max(0, int((lu - datetime.now(timezone.utc)).total_seconds()))
+            # Compute real risk factors so the response always reflects the full
+            # picture (includes FAILED_ATTEMPTS, velocity, etc.) rather than a
+            # hardcoded placeholder that strips out meaningful factor names.
+            risk_score, risk_factors = compute_risk_score(user, email, ip_address, user_agent)
             create_login_log(
                 user=user,
                 email=email,
                 ip_address=ip_address,
                 user_agent=user_agent,
                 success=False,
-                risk_score=100,
-                risk_factors=["LOCKED_ACCOUNT"],
+                risk_score=risk_score,
+                risk_factors=risk_factors,
                 action_taken="denied",
             )
             db.session.commit()
@@ -681,8 +693,8 @@ def login():
                 ),
                 "account_status": ACCOUNT_LOCKED,
                 "locked_until": user.locked_until.isoformat() if user.locked_until else None,
-                "risk_score": 100,
-                "risk_factors": ["LOCKED_ACCOUNT"],
+                "risk_score": risk_score,
+                "risk_factors": risk_factors,
             }), 403
 
     # ------------------------------------------------------------------ #
@@ -864,8 +876,7 @@ def risk_config():
             "high": RISK_HIGH,
             "critical": RISK_CRITICAL,
         },
-        "failed_attempts_to_challenge": FAILED_ATTEMPTS_CHALLENGE,
-        "failed_attempts_to_lock": FAILED_ATTEMPTS_LOCK,
+        "score_per_failed_attempt": SCORE_PER_FAILED_ATTEMPT,
         "velocity_window_seconds": VELOCITY_WINDOW_SECONDS,
         "velocity_max_attempts": VELOCITY_MAX_ATTEMPTS,
         "account_states": [ACCOUNT_ACTIVE, ACCOUNT_CHALLENGED, ACCOUNT_LOCKED, ACCOUNT_SUSPENDED],
