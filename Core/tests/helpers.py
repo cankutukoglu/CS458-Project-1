@@ -10,7 +10,7 @@ from typing import Iterator
 from urllib import error, request
 
 import pytest
-from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import NoSuchWindowException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -559,7 +559,18 @@ def complete_social_provider_login(runtime: FrameworkRuntime, provider: str, use
 
     while iteration < MAX_ITERATIONS:
         iteration += 1
-        current = driver.current_url
+        try:
+            current = driver.current_url
+        except NoSuchWindowException:
+            # The OAuth provider closed the window (e.g. bot detection).
+            # Try to recover by switching to the last available handle.
+            handles = driver.window_handles
+            if handles:
+                driver.switch_to.window(handles[-1])
+                current = driver.current_url
+            else:
+                print("  [OAuth] Browser window closed unexpectedly — giving up")
+                return
         if _is_back_at_app(current):
             print(f"  [OAuth] Back at app: {current}")
             return
@@ -567,6 +578,14 @@ def complete_social_provider_login(runtime: FrameworkRuntime, provider: str, use
         print(f"  [OAuth] Phase 2 (iter {iteration}): still on external page — asking LLM for guidance...")
         try:
             action = _llm_pick_action(driver, provider, username, password)
+        except NoSuchWindowException:
+            handles = driver.window_handles
+            if handles:
+                driver.switch_to.window(handles[-1])
+            else:
+                print("  [OAuth] Browser window closed during LLM action — giving up")
+                return
+            continue
         except Exception as exc:
             print(f"  [OAuth AI] LLM call failed: {exc}")
             time.sleep(3)
